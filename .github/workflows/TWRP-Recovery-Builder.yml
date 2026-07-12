@@ -206,13 +206,27 @@ jobs:
       - name: Check recovery dynamic dependencies
         shell: bash
         run: |
-          set -euxo pipefail
-          ROOT="workspace/out/target/product/${{ inputs.DEVICE_NAME }}/recovery/root"
+          set -euo pipefail
+
+          OUT="$GITHUB_WORKSPACE/workspace/out/target/product/${{ inputs.DEVICE_NAME }}"
+          ROOT="$OUT/recovery/root"
+          REPORT_DIR="$OUT/recovery-audit"
+          REPORT="$REPORT_DIR/ldcheck.txt"
+
           test -e "$ROOT/${{ inputs.LDCHECK }}"
+          mkdir -p "$REPORT_DIR"
+
           cp tools/libneeds tools/ldcheck "$ROOT/"
-          cd "$ROOT"
-          python3 ldcheck -p sbin:system/lib64:vendor/lib64:system/lib:vendor/lib \
-            -d "${{ inputs.LDCHECK }}" | tee ../recovery-audit/ldcheck.txt
+
+          (
+            cd "$ROOT"
+
+            python3 ldcheck \
+              -p sbin:system/bin:system/lib64:vendor/lib64:system/lib:vendor/lib \
+              -d "${{ inputs.LDCHECK }}"
+          ) 2>&1 | tee "$REPORT"
+
+          test -s "$REPORT"
 
       - name: Package recovery.tar
         if: ${{ inputs.RECOVERY_TAR }}
