@@ -168,18 +168,29 @@ jobs:
       - name: Build source TWRP recovery
         shell: bash
         run: |
-          set -euxo pipefail
+          # Android 9's envsetup.sh is not compatible with Bash nounset (-u):
+          # gettop reads TOP before it has been initialized.
+          set -eo pipefail
+          set +u
+
           cd workspace
+
           python --version
           python3 --version
           test "$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')" = "2.7"
+
           export USE_CCACHE=1
           export CCACHE_EXEC="$(command -v ccache)"
           ccache -M 8G
-          source build/envsetup.sh
-          lunch omni_${{ inputs.DEVICE_NAME }}-eng
-          mka recoveryimage
 
+          source build/envsetup.sh
+
+          test -n "${ANDROID_BUILD_TOP:-}"
+          echo "ANDROID_BUILD_TOP=$ANDROID_BUILD_TOP"
+
+          lunch "omni_${{ inputs.DEVICE_NAME }}-eng"
+          mka recoveryimage
+          
       - name: Finalize Samsung image and audit
         shell: bash
         run: |
