@@ -62,7 +62,7 @@ jobs:
 
     steps:
       - name: Check out builder
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Free disk space
         shell: bash
@@ -82,15 +82,48 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl flex g++-multilib gcc-multilib \
             git git-lfs gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
-            lib32z1-dev libbz2-dev libc6-dev-i386 libgl1-mesa-dev liblz4-tool \
-            libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2-utils \
-            lzma lzop openjdk-8-jdk pngcrush rsync schedtool squashfs-tools \
-            unzip wget x11proto-core-dev xsltproc zip zlib1g-dev
+            lib32z1-dev libbz2-dev libc6-dev-i386 libffi-dev libgdbm-dev \
+            libgl1-mesa-dev liblz4-tool libncurses5 libncurses5-dev \
+            libreadline-dev libsdl1.2-dev libsqlite3-dev libssl-dev \
+            libxml2-utils lzma lzop openjdk-8-jdk pngcrush rsync schedtool \
+            squashfs-tools tk-dev unzip uuid-dev wget x11proto-core-dev \
+            xsltproc xz-utils zip zlib1g-dev
 
-      - name: Install Python 2.7 for twrp-9.0
-        uses: actions/setup-python@v5
-        with:
-          python-version: '2.7'
+      - name: Build Python 2.7.18 for twrp-9.0
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PY2_PREFIX="$RUNNER_TEMP/python-2.7.18"
+          PY2_ARCHIVE="$RUNNER_TEMP/Python-2.7.18.tar.xz"
+          PY2_SOURCE="$RUNNER_TEMP/Python-2.7.18"
+
+          curl -fsSL \
+            https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tar.xz \
+            -o "$PY2_ARCHIVE"
+
+          echo "fd6cc8ec0a78c44036f825e739f36e5a  $PY2_ARCHIVE" \
+            | md5sum --check --strict -
+
+          rm -rf "$PY2_SOURCE" "$PY2_PREFIX"
+          tar -xJf "$PY2_ARCHIVE" -C "$RUNNER_TEMP"
+          cd "$PY2_SOURCE"
+
+          ./configure \
+            --prefix="$PY2_PREFIX" \
+            --with-unicode=ucs4 \
+            --without-ensurepip
+          make -j"$(nproc)"
+          make install
+
+          ln -sfn python2.7 "$PY2_PREFIX/bin/python"
+          ln -sfn python2.7 "$PY2_PREFIX/bin/python2"
+
+          "$PY2_PREFIX/bin/python" --version
+          "$PY2_PREFIX/bin/python" -c \
+            'import sys; assert sys.version_info[:2] == (2, 7)'
+
+          echo "$PY2_PREFIX/bin" >> "$GITHUB_PATH"
+          echo "PYTHON2=$PY2_PREFIX/bin/python2.7" >> "$GITHUB_ENV"
 
       - name: Install repo tool
         shell: bash
@@ -137,6 +170,9 @@ jobs:
         run: |
           set -euxo pipefail
           cd workspace
+          python --version
+          python3 --version
+          test "$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')" = "2.7"
           export USE_CCACHE=1
           export CCACHE_EXEC="$(command -v ccache)"
           ccache -M 8G
@@ -190,7 +226,7 @@ jobs:
           } > "$OUT/build-metadata.txt"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: j7duolte-twrp-${{ github.run_id }}
           if-no-files-found: error
@@ -202,18 +238,27 @@ jobs:
             workspace/out/target/product/${{ inputs.DEVICE_NAME }}/build-metadata.txt
             workspace/out/target/product/${{ inputs.DEVICE_NAME }}/recovery-audit/**
 
-      - name: Publish GitHub release
+      - name: Publish GitHub prerelease
         if: ${{ inputs.PUBLISH_RELEASE }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: j7duolte-${{ github.run_id }}
-          name: j7duolte source-build test ${{ github.run_id }}
-          prerelease: true
-          fail_on_unmatched_files: false
-          files: |
-            workspace/out/target/product/${{ inputs.DEVICE_NAME }}/recovery.img
-            workspace/out/target/product/${{ inputs.DEVICE_NAME }}/recovery.img.sha256
-            workspace/out/target/product/${{ inputs.DEVICE_NAME }}/recovery.tar
-            workspace/out/target/product/${{ inputs.DEVICE_NAME }}/build-metadata.txt
-            workspace/out/target/product/${{ inputs.DEVICE_NAME }}/recovery-audit/audit.json
-            workspace/out/target/product/${{ inputs.DEVICE_NAME }}/recovery-audit/ldcheck.txt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          OUT="workspace/out/target/product/${{ inputs.DEVICE_NAME }}"
+          TAG="j7duolte-${{ github.run_id }}"
+          FILES=(
+            "$OUT/recovery.img"
+            "$OUT/recovery.img.sha256"
+            "$OUT/build-metadata.txt"
+            "$OUT/recovery-audit/audit.json"
+            "$OUT/recovery-audit/ldcheck.txt"
+          )
+          if [[ -f "$OUT/recovery.tar" ]]; then
+            FILES+=("$OUT/recovery.tar")
+          fi
+          gh release create "$TAG" "${FILES[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "j7duolte source-build test ${{ github.run_id }}" \
+            --notes "Automated, audited TWRP bring-up build. Do not publish as stable." \
+            --prerelease
