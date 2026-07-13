@@ -192,12 +192,17 @@ jobs:
           set -euxo pipefail
           docker pull yshalsager/lineageos:14.1
           docker run --rm -i \
-            -e USER_ID="$(id -u)" \
-            -e GROUP_ID="$(id -g)" \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp/twrp-home \
+            -e USER="$(id -un)" \
+            -e LOGNAME="$(id -un)" \
+            -v /etc/passwd:/etc/passwd:ro \
+            -v /etc/group:/etc/group:ro \
             -v "$GITHUB_WORKSPACE/workspace:/home/twrp:rw" \
+            -w /home/twrp \
             yshalsager/lineageos:14.1 bash <<'EOF'
           set -e
-          cd /home/twrp
+          mkdir -p "$HOME"
           export ALLOW_MISSING_DEPENDENCIES=true
           source build/envsetup.sh
           lunch omni_j7duolte-eng
