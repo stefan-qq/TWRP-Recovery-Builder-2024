@@ -141,7 +141,7 @@ jobs:
             git rev-parse --verify "$ref" >/dev/null 2>&1 || continue
             while read -r commit; do
               if git show "$commit:variables.h" 2>/dev/null \
-                  | grep -q 'TW_MAIN_VERSION_STR "3.3.0"'; then
+                  | grep -Eq '^[[:space:]]*#define[[:space:]]+TW_MAIN_VERSION_STR[[:space:]]+"3\.3\.0"'; then
                 selected="$commit"
                 break 2
               fi
@@ -150,7 +150,7 @@ jobs:
 
           test -n "$selected"
           git checkout --detach "$selected"
-          grep -q 'TW_MAIN_VERSION_STR "3.3.0"' variables.h
+          grep -Eq '^[[:space:]]*#define[[:space:]]+TW_MAIN_VERSION_STR[[:space:]]+"3\.3\.0"' variables.h
           echo "RECOVERY_SOURCE_COMMIT=$selected" >> "$GITHUB_ENV"
 
           rm -rf "$GITHUB_WORKSPACE/workspace/bootable/recovery"
