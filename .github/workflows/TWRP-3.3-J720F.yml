@@ -23,7 +23,6 @@ jobs:
     permissions:
       contents: write
     env:
-      SOURCE_ARCHIVE_URL: https://github.com/TwrpBuilder/twrp-sources/releases/download/omni_twrp-8.1-20180221-norepo/omni_twrp-8.1-20180221-norepo.tar.xz
       RECOVERY_CUTOFF: '2019-04-18T00:00:00Z'
       DEVICE_PATH: device/samsung/j7duolte
       DEVICE_NAME: j7duolte
@@ -50,18 +49,72 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             cpio curl git xz-utils python3
 
-      - name: Download donor-era Omni/TWRP source archive
+      - name: Install repo tool
         shell: bash
         run: |
           set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Initialize and sync donor-era Omni/TWRP base
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          MANIFEST_URL=https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git
+
           rm -rf workspace
           mkdir -p workspace
-          curl -fL --retry 5 --retry-delay 5 \
-            "$SOURCE_ARCHIVE_URL" \
-            -o "$RUNNER_TEMP/omni-twrp.tar.xz"
-          tar -xJf "$RUNNER_TEMP/omni-twrp.tar.xz" -C workspace
-          test -f workspace/build/envsetup.sh
-          test -d workspace/vendor/omni
+          cd workspace
+
+          selected_branch=""
+
+          for candidate in twrp-8.1 android-8.1; do
+            if git ls-remote --exit-code --heads \
+                "$MANIFEST_URL" "refs/heads/$candidate" \
+                >/dev/null 2>&1; then
+              selected_branch="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$selected_branch" ]]; then
+            echo "No usable Android 8.1 TWRP manifest branch found" >&2
+            exit 1
+          fi
+
+          echo "Using manifest branch: $selected_branch"
+          echo "LEGACY_MANIFEST_BRANCH=$selected_branch" >> "$GITHUB_ENV"
+
+          repo init --depth=1 \
+            -u "$MANIFEST_URL" \
+            -b "$selected_branch"
+
+          sync_ok=0
+
+          for attempt in 1 2 3; do
+            if repo sync \
+                -c \
+                --force-sync \
+                --no-clone-bundle \
+                --no-tags \
+                -j4; then
+              sync_ok=1
+              break
+            fi
+
+            echo "repo sync attempt $attempt failed" >&2
+            sleep 15
+          done
+
+          test "$sync_ok" -eq 1
+          test -f build/envsetup.sh
+          test -d vendor/omni
+
           df -h
 
       - name: Select the historical TWRP 3.3 recovery source
