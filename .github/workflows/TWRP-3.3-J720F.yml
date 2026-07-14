@@ -117,6 +117,21 @@ jobs:
 
           df -h
 
+      - name: Verify manifest-matched legacy clang
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLANG_ROOT="workspace/prebuilts/clang/host/linux-x86"
+          CLANG_BIN="$CLANG_ROOT/clang-4053586/bin/clang"
+
+          ls -la "$CLANG_ROOT"
+          find "$CLANG_ROOT" \
+            -maxdepth 3 \
+            -type f \
+            -name clang \
+            -print
+          test -x "$CLANG_BIN"
+
       - name: Select the historical TWRP 3.3 recovery source
         shell: bash
         run: |
@@ -156,15 +171,6 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/workspace/bootable/recovery"
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
-
-      - name: Install the donor clang revision
-        shell: bash
-        run: |
-          set -euxo pipefail
-          rm -rf workspace/prebuilts/clang/host/linux-x86
-          git clone --depth=1 --branch android-7.0.0_r21 \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            workspace/prebuilts/clang/host/linux-x86
 
       - name: Clone the J720F legacy device tree
         shell: bash
