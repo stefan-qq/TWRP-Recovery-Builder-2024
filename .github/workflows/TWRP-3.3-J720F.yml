@@ -191,19 +191,25 @@ jobs:
           test ! -e recovery/root/sbin/j720f_diag.sh
           grep -q 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
           grep -q 'TW_CRYPTO_USE_SYSTEM_VOLD := true' BoardConfig.mk
-          grep -q 'setprop sys.usb.controller 13600000.dwc3' \
+          grep -q 'write /sys/fs/selinux/enforce 0' \
             recovery/root/init.recovery.usb.rc
-          grep -q 'functions/ffs.adb' \
+          grep -q 'service j720f_usb_setup /sbin/j720f_usb.sh setup' \
             recovery/root/init.recovery.usb.rc
-          grep -q 'sys.usb.ffs.ready=1.*sys.usb.config=adb' \
+          grep -q 'service j720f_usb_bind /sbin/j720f_usb.sh bind' \
             recovery/root/init.recovery.usb.rc
+          grep -q 'sys.usb.ffs.ready=1' \
+            recovery/root/init.recovery.usb.rc
+          test -x recovery/root/sbin/j720f_usb.sh
+          grep -q 'functions/ffs.adb' recovery/root/sbin/j720f_usb.sh
+          grep -q '13600000.dwc3' recovery/root/sbin/j720f_usb.sh
+          ! grep -q 'functions/adb.0' recovery/root/sbin/j720f_usb.sh
           ! grep -q '/sys/class/android_usb' \
-            recovery/root/init.recovery.usb.rc
-          ! grep -q 'functions/adb.0' \
             recovery/root/init.recovery.usb.rc
           grep -q 'persist.sys.usb.config=adb' omni_j7duolte.mk
           grep -q 'persist.sys.usb.config=adb' system.prop
-          grep -q 'permissive adbd;' sepolicy/recovery.te
+          grep -q 'permissive recovery;' sepolicy/recovery.te
+          ! grep -q 'permissive adbd;' sepolicy/recovery.te
+          ! grep -q 'permissive init;' sepolicy/recovery.te
 
       - name: Build source TWRP 3.3 in the donor environment
         shell: bash
