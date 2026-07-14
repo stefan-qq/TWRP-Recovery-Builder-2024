@@ -73,7 +73,7 @@ jobs:
 
           selected_branch=""
 
-          for candidate in twrp-8.1 android-8.1; do
+          for candidate in twrp-7.1 android-7.1; do
             if git ls-remote --exit-code --heads \
                 "$MANIFEST_URL" "refs/heads/$candidate" \
                 >/dev/null 2>&1; then
@@ -83,7 +83,7 @@ jobs:
           done
 
           if [[ -z "$selected_branch" ]]; then
-            echo "No usable Android 8.1 TWRP manifest branch found" >&2
+            echo "No usable Android 7.1 TWRP manifest branch found" >&2
             exit 1
           fi
 
@@ -122,7 +122,7 @@ jobs:
         run: |
           set -euxo pipefail
           CLANG_ROOT="workspace/prebuilts/clang/host/linux-x86"
-          CLANG_BIN="$CLANG_ROOT/clang-4053586/bin/clang"
+          CLANG_BIN="$CLANG_ROOT/clang-2690385/bin/clang"
 
           ls -la "$CLANG_ROOT"
           find "$CLANG_ROOT" \
