@@ -185,7 +185,9 @@ jobs:
 
           test ! -e recovery/root/init.rc
           test ! -e recovery/root/init.recovery.service.rc
-          test ! -e recovery/root/init.recovery.samsungexynos7885.rc
+          test -f recovery/root/init.recovery.samsungexynos7885.rc
+          grep -Eq '^[[:space:]]*start[[:space:]]+set_permissive([[:space:]]|$)' \
+            recovery/root/init.recovery.samsungexynos7885.rc
           test ! -e recovery/root/sbin/j720f_diag.sh
           grep -q 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
           grep -q 'TW_CRYPTO_USE_SYSTEM_VOLD := true' BoardConfig.mk
