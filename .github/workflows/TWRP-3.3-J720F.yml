@@ -208,18 +208,32 @@ jobs:
           grep -q '13600000.dwc3' recovery/root/sbin/j720f_usb.sh
           grep -q 'j720f-usb-current' recovery/root/sbin/j720f_usb.sh
           grep -q 'configfs-mounted' recovery/root/sbin/j720f_usb.sh
+          grep -q 'native-configfs-failed' \
+            recovery/root/sbin/j720f_usb.sh
+          grep -q '/sbin/j720f_configfs_mount' \
+            recovery/root/sbin/j720f_usb.sh
+          grep -q 'j720f-configfs-root' \
+            recovery/root/sbin/j720f_usb.sh
           ! grep -q 'functions/adb.0' recovery/root/sbin/j720f_usb.sh
           test ! -e recovery/root/sbin/j720f_diag.sh
           grep -q 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
           grep -q 'TW_CRYPTO_USE_SYSTEM_VOLD := true' BoardConfig.mk
-          grep -q 'setprop sys.usb.configfs 1' \
+          ! grep -q 'setprop sys.usb.configfs 1' \
             recovery/root/init.recovery.usb.rc
-          grep -q 'setprop sys.usb.controller 13600000.dwc3' \
+          ! grep -q 'setprop sys.usb.controller 13600000.dwc3' \
             recovery/root/init.recovery.usb.rc
-          grep -q 'mount configfs none /sys/kernel/config' \
+          ! grep -q 'mount configfs none /sys/kernel/config' \
             recovery/root/init.recovery.usb.rc
           grep -q 'write /sys/class/android_usb/android0/functions mtp,adb' \
             recovery/root/init.recovery.usb.rc
+
+          test -f recovery/j720f_configfs_mount/Android.mk
+          test -f recovery/j720f_configfs_mount/j720f_configfs_mount.c
+          grep -q 'LOCAL_MODULE := j720f_configfs_mount' \
+            recovery/j720f_configfs_mount/Android.mk
+          grep -q 'LOCAL_FORCE_STATIC_EXECUTABLE := true' \
+            recovery/j720f_configfs_mount/Android.mk
+          grep -q 'j720f_configfs_mount' omni_j7duolte.mk
 
       - name: Build source TWRP 3.3 in the donor environment
         shell: bash
