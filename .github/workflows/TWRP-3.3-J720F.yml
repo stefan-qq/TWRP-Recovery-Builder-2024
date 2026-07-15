@@ -1,4 +1,4 @@
-name: Build J720F donor-era TWRP 3.3
+name: Build J720F stock-base TWRP 3.3
 
 on:
   workflow_dispatch:
@@ -47,7 +47,7 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cpio curl git xz-utils python3
+            cpio curl git lz4 xz-utils python3
 
       - name: Install repo tool
         shell: bash
@@ -172,7 +172,7 @@ jobs:
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
 
-      - name: Clone the J720F legacy device tree
+      - name: Clone and validate the J720F device tree
         shell: bash
         run: |
           set -euxo pipefail
@@ -183,60 +183,28 @@ jobs:
           cd "workspace/$DEVICE_PATH"
           echo "DEVICE_TREE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
-          test ! -e recovery/root/init.rc
-          test ! -e recovery/root/init.recovery.service.rc
-          test -f recovery/root/init.recovery.samsungexynos7885.rc
-          grep -Eq '^[[:space:]]*start[[:space:]]+set_permissive([[:space:]]|$)' \
-            recovery/root/init.recovery.samsungexynos7885.rc
-          ! grep -q 'service j720f_usb_manual' \
-            recovery/root/init.recovery.samsungexynos7885.rc
-          ! grep -q 'keycodes 114 115' \
-            recovery/root/init.recovery.samsungexynos7885.rc
+          test -x tools/assemble_stock_base_recovery.py
+          test -x tools/audit_recovery.py
+          test -x tools/finalize_samsung_recovery.py
+          test -f prebuilt/recovery-J720F-CUL1.img.lz4
+          echo \
+            '28af7ed6508da206f5c649e8ad9afdd65043bb5241826d8135f2b26b2eabe24c  prebuilt/recovery-J720F-CUL1.img.lz4' \
+            | sha256sum -c -
 
-          test -x tools/patch_twrp_usb_button.py
-          python3 tools/patch_twrp_usb_button.py \
-            "$GITHUB_WORKSPACE/workspace/bootable/recovery"
+          test ! -e recovery/j720f_configfs_mount
+          test ! -e recovery/root/sbin/j720f_usb.sh
+          test ! -e tools/patch_twrp_usb_button.py
+          ! grep -q 'j720f_configfs_mount' Android.mk
+          ! grep -q 'j720f_configfs_mount' omni_j7duolte.mk
 
-          grep -R -q 'Start J720F USB/ADB' \
-            "$GITHUB_WORKSPACE/workspace/bootable/recovery/gui/theme"
-          grep -R -q             '<action function="cmd">/sbin/j720f_usb.sh</action>' \
-            "$GITHUB_WORKSPACE/workspace/bootable/recovery/gui/theme"
-          test -x recovery/root/sbin/j720f_usb.sh
-          grep -q 'functions/ffs.adb' recovery/root/sbin/j720f_usb.sh
-          grep -q 'setprop ctl.restart adbd' \
-            recovery/root/sbin/j720f_usb.sh
-          grep -q '13600000.dwc3' recovery/root/sbin/j720f_usb.sh
-          grep -q 'j720f-usb-current' recovery/root/sbin/j720f_usb.sh
-          grep -q 'configfs-mounted' recovery/root/sbin/j720f_usb.sh
-          grep -q 'native-configfs-failed' \
-            recovery/root/sbin/j720f_usb.sh
-          grep -q '/sbin/j720f_configfs_mount' \
-            recovery/root/sbin/j720f_usb.sh
-          grep -q 'j720f-configfs-root' \
-            recovery/root/sbin/j720f_usb.sh
-          ! grep -q 'functions/adb.0' recovery/root/sbin/j720f_usb.sh
-          test ! -e recovery/root/sbin/j720f_diag.sh
           grep -q 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
           grep -q 'TW_CRYPTO_USE_SYSTEM_VOLD := true' BoardConfig.mk
-          ! grep -q 'setprop sys.usb.configfs 1' \
-            recovery/root/init.recovery.usb.rc
-          ! grep -q 'setprop sys.usb.controller 13600000.dwc3' \
-            recovery/root/init.recovery.usb.rc
-          ! grep -q 'mount configfs none /sys/kernel/config' \
-            recovery/root/init.recovery.usb.rc
-          grep -q 'write /sys/class/android_usb/android0/functions mtp,adb' \
-            recovery/root/init.recovery.usb.rc
-
-          test -f recovery/j720f_configfs_mount/Android.mk
-          test -f recovery/j720f_configfs_mount/j720f_configfs_mount.c
-          grep -Fq \
-            'include $(LOCAL_PATH)/recovery/j720f_configfs_mount/Android.mk' \
-            Android.mk
-          grep -q 'LOCAL_MODULE := j720f_configfs_mount' \
-            recovery/j720f_configfs_mount/Android.mk
-          grep -q 'LOCAL_FORCE_STATIC_EXECUTABLE := true' \
-            recovery/j720f_configfs_mount/Android.mk
-          grep -q 'j720f_configfs_mount' omni_j7duolte.mk
+          grep -q 'TARGET_RECOVERY_PIXEL_FORMAT := "ABGR_8888"' BoardConfig.mk
+          grep -q 'RECOVERY_GRAPHICS_USE_LINELENGTH := true' BoardConfig.mk
+          grep -q '/data' recovery.fstab
+          grep -q 'encryptable=footer' recovery.fstab
+          ! grep -q '/carrier' recovery.fstab
+          ! grep -q '/external_sd' recovery.fstab
 
       - name: Build source TWRP 3.3 in the donor environment
         shell: bash
@@ -258,15 +226,39 @@ jobs:
           export ALLOW_MISSING_DEPENDENCIES=true
           source build/envsetup.sh
           lunch omni_j7duolte-eng
-
-          make -j"$(nproc)" j720f_configfs_mount
-
-          test -x             out/target/product/j7duolte/recovery/root/sbin/j720f_configfs_mount
-
           make -j"$(nproc)" recoveryimage
-
-          test -x             out/target/product/j7duolte/recovery/root/sbin/j720f_configfs_mount
+          test -f out/target/product/j7duolte/recovery.img
           EOF
+
+      - name: Assemble stock Android 10 base with TWRP payload
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TREE="workspace/$DEVICE_PATH"
+          OUT="workspace/out/target/product/$DEVICE_NAME"
+          SOURCE_IMAGE="$OUT/recovery.img"
+          STOCK_IMAGE="$OUT/stock-recovery-CUL1.img"
+          ASSEMBLED_IMAGE="$OUT/recovery-stockbase.img"
+
+          test -f "$SOURCE_IMAGE"
+          cp "$SOURCE_IMAGE" "$OUT/recovery-source.img"
+
+          lz4 -d -f \
+            "$TREE/prebuilt/recovery-J720F-CUL1.img.lz4" \
+            "$STOCK_IMAGE"
+
+          echo \
+            '394df2c144f8e4b42495c353bc71ffbabf0fd5610087f80705bc59d111d55983  workspace/out/target/product/j7duolte/stock-recovery-CUL1.img' \
+            | sha256sum -c -
+
+          python3 "$TREE/tools/assemble_stock_base_recovery.py" \
+            --stock "$STOCK_IMAGE" \
+            --source "$OUT/recovery-source.img" \
+            --output "$ASSEMBLED_IMAGE" \
+            --work-dir "$OUT/stockbase-work"
+
+          mv "$ASSEMBLED_IMAGE" "$SOURCE_IMAGE"
+          rm -f "$STOCK_IMAGE"
 
       - name: Finalize Samsung image and audit
         shell: bash
@@ -293,7 +285,8 @@ jobs:
             tar -cf recovery.tar recovery.img
           )
           {
-            echo 'userspace=donor-era Omni/TWRP'
+            echo 'layout=stock Android 10 recovery base plus source-built TWRP 3.3 payload'
+            echo 'stock_firmware=AP_J720FDDS7CUL1_CL19058735_QB46879271_REV00_user_low_ship_meta_OS10'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
             echo "device_tree=${{ inputs.DEVICE_TREE }}"
@@ -328,6 +321,6 @@ jobs:
             "$OUT/build-metadata.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F donor-era TWRP 3.3 test ${{ github.run_id }}" \
-            --notes "Source-built J720F donor-era TWRP 3.3 test image." \
+            --title "J720F stock-base TWRP 3.3 test ${{ github.run_id }}" \
+            --notes "J720F Android 10 stock-base recovery with a source-built TWRP 3.3 payload." \
             --prerelease
