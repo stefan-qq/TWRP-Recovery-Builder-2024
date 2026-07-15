@@ -188,10 +188,19 @@ jobs:
           test -f recovery/root/init.recovery.samsungexynos7885.rc
           grep -Eq '^[[:space:]]*start[[:space:]]+set_permissive([[:space:]]|$)' \
             recovery/root/init.recovery.samsungexynos7885.rc
-          grep -q 'service j720f_usb_manual /sbin/j720f_usb.sh' \
+          ! grep -q 'service j720f_usb_manual' \
             recovery/root/init.recovery.samsungexynos7885.rc
-          grep -q 'keycodes 114 115' \
+          ! grep -q 'keycodes 114 115' \
             recovery/root/init.recovery.samsungexynos7885.rc
+
+          test -x tools/patch_twrp_usb_button.py
+          python3 tools/patch_twrp_usb_button.py \
+            "$GITHUB_WORKSPACE/workspace/bootable/recovery"
+
+          grep -R -q 'Start J720F USB/ADB' \
+            "$GITHUB_WORKSPACE/workspace/bootable/recovery/gui/theme"
+          grep -R -q             '<action function="cmd">/sbin/j720f_usb.sh</action>' \
+            "$GITHUB_WORKSPACE/workspace/bootable/recovery/gui/theme"
           test -x recovery/root/sbin/j720f_usb.sh
           grep -q 'functions/ffs.adb' recovery/root/sbin/j720f_usb.sh
           grep -q 'setprop ctl.restart adbd' \
