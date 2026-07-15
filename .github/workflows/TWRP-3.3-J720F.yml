@@ -229,6 +229,9 @@ jobs:
 
           test -f recovery/j720f_configfs_mount/Android.mk
           test -f recovery/j720f_configfs_mount/j720f_configfs_mount.c
+          grep -Fq \
+            'include $(LOCAL_PATH)/recovery/j720f_configfs_mount/Android.mk' \
+            Android.mk
           grep -q 'LOCAL_MODULE := j720f_configfs_mount' \
             recovery/j720f_configfs_mount/Android.mk
           grep -q 'LOCAL_FORCE_STATIC_EXECUTABLE := true' \
@@ -255,7 +258,14 @@ jobs:
           export ALLOW_MISSING_DEPENDENCIES=true
           source build/envsetup.sh
           lunch omni_j7duolte-eng
+
+          make -j"$(nproc)" j720f_configfs_mount
+
+          test -x             out/target/product/j7duolte/recovery/root/sbin/j720f_configfs_mount
+
           make -j"$(nproc)" recoveryimage
+
+          test -x             out/target/product/j7duolte/recovery/root/sbin/j720f_configfs_mount
           EOF
 
       - name: Finalize Samsung image and audit
