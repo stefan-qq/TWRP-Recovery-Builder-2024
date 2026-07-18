@@ -23,7 +23,6 @@ jobs:
     permissions:
       contents: write
     env:
-      SOURCE_ARCHIVE_URL: https://github.com/TwrpBuilder/twrp-sources/releases/download/omni_twrp-8.1-20180221-norepo/omni_twrp-8.1-20180221-norepo.tar.xz
       RECOVERY_SOURCE_REPOSITORY: https://github.com/omnirom/android_bootable_recovery.git
       RECOVERY_SOURCE_COMMIT: b1a7ae9cd98e6ac3377d1fecc1341b9643a4f15b
       DEVICE_PATH: device/samsung/j7duolte
@@ -51,18 +50,55 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             cpio curl git xz-utils python3
 
-      - name: Download the proven donor-era Omni/TWRP source archive
+      - name: Install repo tool
         shell: bash
         run: |
           set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL --retry 5 --retry-delay 5 \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Initialize and sync donor-era Omni/TWRP base
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MANIFEST_URL=https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git
+          MANIFEST_BRANCH=twrp-7.1
+
+          git ls-remote --exit-code --heads \
+            "$MANIFEST_URL" "refs/heads/$MANIFEST_BRANCH" \
+            >/dev/null
+
           rm -rf workspace
           mkdir -p workspace
-          curl -fL --retry 5 --retry-delay 5 \
-            "$SOURCE_ARCHIVE_URL" \
-            -o "$RUNNER_TEMP/omni-twrp.tar.xz"
-          tar -xJf "$RUNNER_TEMP/omni-twrp.tar.xz" -C workspace
-          test -f workspace/build/envsetup.sh
-          test -d workspace/vendor/omni
+          cd workspace
+
+          repo init --depth=1 \
+            -u "$MANIFEST_URL" \
+            -b "$MANIFEST_BRANCH"
+
+          sync_ok=0
+          for attempt in 1 2 3; do
+            if repo sync \
+                -c \
+                --force-sync \
+                --no-clone-bundle \
+                --no-tags \
+                -j4; then
+              sync_ok=1
+              break
+            fi
+            echo "repo sync attempt $attempt failed" >&2
+            sleep 15
+          done
+
+          test "$sync_ok" -eq 1
+          test -f build/envsetup.sh
+          test -d vendor/omni
+          echo "LEGACY_MANIFEST_BRANCH=$MANIFEST_BRANCH" >> "$GITHUB_ENV"
           df -h
 
       - name: Pin the exact TWRP 3.3 recovery source used by v11
