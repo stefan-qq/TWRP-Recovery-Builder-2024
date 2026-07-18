@@ -1,4 +1,4 @@
-name: Build J720F stock-base TWRP 3.3
+name: Build J720F v11-base TWRP 3.3 RC
 
 on:
   workflow_dispatch:
@@ -8,9 +8,9 @@ on:
         required: true
         default: https://github.com/stefan-qq/android_device_samsung_j7duolte
       DEVICE_TREE_BRANCH:
-        description: Legacy device-tree branch
+        description: Device-tree branch to build
         required: true
-        default: twrp-3.3
+        default: rc1-v11-functional
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -23,14 +23,16 @@ jobs:
     permissions:
       contents: write
     env:
-      RECOVERY_CUTOFF: '2019-04-18T00:00:00Z'
+      SOURCE_ARCHIVE_URL: https://github.com/TwrpBuilder/twrp-sources/releases/download/omni_twrp-8.1-20180221-norepo/omni_twrp-8.1-20180221-norepo.tar.xz
+      RECOVERY_SOURCE_REPOSITORY: https://github.com/omnirom/android_bootable_recovery.git
+      RECOVERY_SOURCE_COMMIT: b1a7ae9cd98e6ac3377d1fecc1341b9643a4f15b
       DEVICE_PATH: device/samsung/j7duolte
       DEVICE_NAME: j7duolte
       RECOVERY_LIMIT: '39845888'
 
     steps:
       - name: Check out builder
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
 
       - name: Free disk space
         shell: bash
@@ -47,130 +49,51 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cpio curl git lz4 xz-utils python3
+            cpio curl git xz-utils python3
 
-      - name: Install repo tool
+      - name: Download the proven donor-era Omni/TWRP source archive
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p "$HOME/bin"
-          curl -fsSL \
-            https://storage.googleapis.com/git-repo-downloads/repo \
-            -o "$HOME/bin/repo"
-          chmod +x "$HOME/bin/repo"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-
-      - name: Initialize and sync donor-era Omni/TWRP base
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          MANIFEST_URL=https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git
-
           rm -rf workspace
           mkdir -p workspace
-          cd workspace
-
-          selected_branch=""
-
-          for candidate in twrp-7.1 android-7.1; do
-            if git ls-remote --exit-code --heads \
-                "$MANIFEST_URL" "refs/heads/$candidate" \
-                >/dev/null 2>&1; then
-              selected_branch="$candidate"
-              break
-            fi
-          done
-
-          if [[ -z "$selected_branch" ]]; then
-            echo "No usable Android 7.1 TWRP manifest branch found" >&2
-            exit 1
-          fi
-
-          echo "Using manifest branch: $selected_branch"
-          echo "LEGACY_MANIFEST_BRANCH=$selected_branch" >> "$GITHUB_ENV"
-
-          repo init --depth=1 \
-            -u "$MANIFEST_URL" \
-            -b "$selected_branch"
-
-          sync_ok=0
-
-          for attempt in 1 2 3; do
-            if repo sync \
-                -c \
-                --force-sync \
-                --no-clone-bundle \
-                --no-tags \
-                -j4; then
-              sync_ok=1
-              break
-            fi
-
-            echo "repo sync attempt $attempt failed" >&2
-            sleep 15
-          done
-
-          test "$sync_ok" -eq 1
-          test -f build/envsetup.sh
-          test -d vendor/omni
-
+          curl -fL --retry 5 --retry-delay 5 \
+            "$SOURCE_ARCHIVE_URL" \
+            -o "$RUNNER_TEMP/omni-twrp.tar.xz"
+          tar -xJf "$RUNNER_TEMP/omni-twrp.tar.xz" -C workspace
+          test -f workspace/build/envsetup.sh
+          test -d workspace/vendor/omni
           df -h
 
-      - name: Verify manifest-matched legacy clang
-        shell: bash
-        run: |
-          set -euxo pipefail
-          CLANG_ROOT="workspace/prebuilts/clang/host/linux-x86"
-          CLANG_BIN="$CLANG_ROOT/clang-2690385/bin/clang"
-
-          ls -la "$CLANG_ROOT"
-          find "$CLANG_ROOT" \
-            -maxdepth 3 \
-            -type f \
-            -name clang \
-            -print
-          test -x "$CLANG_BIN"
-
-      - name: Select the historical TWRP 3.3 recovery source
+      - name: Pin the exact TWRP 3.3 recovery source used by v11
         shell: bash
         run: |
           set -euxo pipefail
           rm -rf "$RUNNER_TEMP/recovery-source"
-          if ! git clone --filter=blob:none --no-checkout \
-              https://github.com/omnirom/android_bootable_recovery.git \
-              "$RUNNER_TEMP/recovery-source"; then
-            git clone --filter=blob:none --no-checkout \
-              https://github.com/TeamWin/android_bootable_recovery.git \
-              "$RUNNER_TEMP/recovery-source"
-          fi
+          git clone --filter=blob:none --no-checkout \
+            "$RECOVERY_SOURCE_REPOSITORY" \
+            "$RUNNER_TEMP/recovery-source"
           cd "$RUNNER_TEMP/recovery-source"
           git fetch origin '+refs/heads/*:refs/remotes/origin/*' \
             --filter=blob:none --prune
-
-          selected=''
-          for ref in \
-            refs/remotes/origin/android-8.1 \
-            refs/remotes/origin/android-9.0 \
-            refs/remotes/origin/master; do
-            git rev-parse --verify "$ref" >/dev/null 2>&1 || continue
-            while read -r commit; do
-              if git show "$commit:variables.h" 2>/dev/null \
-                  | grep -Eq '^[[:space:]]*#define[[:space:]]+TW_MAIN_VERSION_STR[[:space:]]+"3\.3\.0"'; then
-                selected="$commit"
-                break 2
-              fi
-            done < <(git rev-list --max-count=300 --before="$RECOVERY_CUTOFF" "$ref" -- variables.h)
-          done
-
-          test -n "$selected"
-          git checkout --detach "$selected"
-          grep -Eq '^[[:space:]]*#define[[:space:]]+TW_MAIN_VERSION_STR[[:space:]]+"3\.3\.0"' variables.h
-          echo "RECOVERY_SOURCE_COMMIT=$selected" >> "$GITHUB_ENV"
+          git cat-file -e "$RECOVERY_SOURCE_COMMIT^{commit}"
+          git checkout --detach "$RECOVERY_SOURCE_COMMIT"
+          test "$(git rev-parse HEAD)" = "$RECOVERY_SOURCE_COMMIT"
+          grep -Eq 'TW_MAIN_VERSION_STR[[:space:]]+"3\.3\.0"' variables.h
 
           rm -rf "$GITHUB_WORKSPACE/workspace/bootable/recovery"
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
+
+      - name: Install the donor clang revision
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf workspace/prebuilts/clang/host/linux-x86
+          git clone --depth=1 --branch android-7.0.0_r21 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            workspace/prebuilts/clang/host/linux-x86
+          test -x workspace/prebuilts/clang/host/linux-x86/clang-2690385/bin/clang
 
       - name: Clone and validate the J720F device tree
         shell: bash
@@ -183,30 +106,38 @@ jobs:
           cd "workspace/$DEVICE_PATH"
           echo "DEVICE_TREE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
-          test -x tools/assemble_stock_base_recovery.py
           test -x tools/audit_recovery.py
           test -x tools/finalize_samsung_recovery.py
-          test -f prebuilt/recovery-J720F-CUL1.img.lz4
+          test -f prebuilt/kernel
+          test -f prebuilt/dt.img
+          test -f prebuilt/samsung-recovery-trailer.bin
+
           echo \
-            '28af7ed6508da206f5c649e8ad9afdd65043bb5241826d8135f2b26b2eabe24c  prebuilt/recovery-J720F-CUL1.img.lz4' \
+            'f91660e294f4532d266d23f386f99f4e9c290859154236d82e5280af9f11d268  prebuilt/kernel' \
+            | sha256sum -c -
+          echo \
+            '25fd9f99fcb520b117475c812302afdfd53f8f36dbcda6a9416429b2401ddafb  prebuilt/dt.img' \
             | sha256sum -c -
 
-          test ! -e recovery/j720f_configfs_mount
-          test ! -e recovery/root/sbin/j720f_usb.sh
-          test ! -e tools/patch_twrp_usb_button.py
-          ! grep -q 'j720f_configfs_mount' Android.mk
-          ! grep -q 'j720f_configfs_mount' omni_j7duolte.mk
-
           grep -q 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
-          grep -q 'TW_CRYPTO_USE_SYSTEM_VOLD := true' BoardConfig.mk
-          grep -q 'TARGET_RECOVERY_PIXEL_FORMAT := "ABGR_8888"' BoardConfig.mk
-          grep -q 'RECOVERY_GRAPHICS_USE_LINELENGTH := true' BoardConfig.mk
-          grep -q '/data' recovery.fstab
-          grep -q 'encryptable=footer' recovery.fstab
-          ! grep -q '/carrier' recovery.fstab
-          ! grep -q '/external_sd' recovery.fstab
+          grep -q 'TW_INCLUDE_CRYPTO := true' BoardConfig.mk
+          grep -q 'TW_EXCLUDE_MTP := true' BoardConfig.mk
+          ! grep -q 'TW_INCLUDE_FBE' BoardConfig.mk
+          ! grep -q 'TW_CRYPTO_USE_SYSTEM_VOLD' BoardConfig.mk
 
-      - name: Build source TWRP 3.3 in the donor environment
+          grep -q '^/external_sd vfat /dev/block/mmcblk1p1 /dev/block/mmcblk1' recovery.fstab
+          grep -q '^/efs[[:space:]]\+emmc' recovery.fstab
+          grep -q '^/cpefs[[:space:]]\+emmc' recovery.fstab
+          grep -q 'allow recovery vfat:file create_file_perms;' sepolicy/recovery.te
+          grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
+          grep -q 'permissive init;' sepolicy/init.te
+
+          grep -q 'mount configfs none /sys/kernel/config' recovery/root/init.recovery.usb.rc
+          grep -q 'functions/ffs.adb' recovery/root/init.recovery.usb.rc
+          grep -q '13600000.dwc3' recovery/root/init.recovery.usb.rc
+          ! grep -qi 'mtp' recovery/root/init.recovery.usb.rc
+
+      - name: Build source TWRP 3.3 in the proven donor environment
         shell: bash
         run: |
           set -euxo pipefail
@@ -220,45 +151,15 @@ jobs:
             -v /etc/group:/etc/group:ro \
             -v "$GITHUB_WORKSPACE/workspace:/home/twrp:rw" \
             -w /home/twrp \
-            yshalsager/lineageos:14.1 bash <<'EOF'
-          set -e
+            yshalsager/lineageos:14.1 bash <<'BUILD_EOF'
+          set -euxo pipefail
           mkdir -p "$HOME"
           export ALLOW_MISSING_DEPENDENCIES=true
           source build/envsetup.sh
           lunch omni_j7duolte-eng
           make -j"$(nproc)" recoveryimage
           test -f out/target/product/j7duolte/recovery.img
-          EOF
-
-      - name: Assemble stock Android 10 base with TWRP payload
-        shell: bash
-        run: |
-          set -euxo pipefail
-          TREE="workspace/$DEVICE_PATH"
-          OUT="workspace/out/target/product/$DEVICE_NAME"
-          SOURCE_IMAGE="$OUT/recovery.img"
-          STOCK_IMAGE="$OUT/stock-recovery-CUL1.img"
-          ASSEMBLED_IMAGE="$OUT/recovery-stockbase.img"
-
-          test -f "$SOURCE_IMAGE"
-          cp "$SOURCE_IMAGE" "$OUT/recovery-source.img"
-
-          lz4 -d -f \
-            "$TREE/prebuilt/recovery-J720F-CUL1.img.lz4" \
-            "$STOCK_IMAGE"
-
-          echo \
-            '394df2c144f8e4b42495c353bc71ffbabf0fd5610087f80705bc59d111d55983  workspace/out/target/product/j7duolte/stock-recovery-CUL1.img' \
-            | sha256sum -c -
-
-          python3 "$TREE/tools/assemble_stock_base_recovery.py" \
-            --stock "$STOCK_IMAGE" \
-            --source "$OUT/recovery-source.img" \
-            --output "$ASSEMBLED_IMAGE" \
-            --work-dir "$OUT/stockbase-work"
-
-          mv "$ASSEMBLED_IMAGE" "$SOURCE_IMAGE"
-          rm -f "$STOCK_IMAGE"
+          BUILD_EOF
 
       - name: Finalize Samsung image and audit
         shell: bash
@@ -285,25 +186,33 @@ jobs:
             tar -cf recovery.tar recovery.img
           )
           {
-            echo 'layout=stock Android 10 recovery base plus source-built TWRP 3.3 payload'
-            echo 'stock_firmware=AP_J720FDDS7CUL1_CL19058735_QB46879271_REV00_user_low_ship_meta_OS10'
+            echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
+            echo 'base=v11 UI/touch generation'
             echo 'twrp_version=3.3.0-0'
+            echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
             echo "device_tree=${{ inputs.DEVICE_TREE }}"
             echo "device_tree_branch=${{ inputs.DEVICE_TREE_BRANCH }}"
             echo "device_tree_commit=$DEVICE_TREE_COMMIT"
+            echo 'stock_base_assembly=false'
           } > "$OUT/build-metadata.txt"
+
+          sha256sum \
+            "$OUT/recovery.img" \
+            "$OUT/recovery.tar" \
+            > "$OUT/SHA256SUMS.txt"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-rc-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
             workspace/out/target/product/j7duolte/recovery.img
             workspace/out/target/product/j7duolte/recovery.tar
             workspace/out/target/product/j7duolte/build-metadata.txt
+            workspace/out/target/product/j7duolte/SHA256SUMS.txt
             workspace/out/target/product/j7duolte/recovery-audit/**
 
       - name: Publish GitHub prerelease
@@ -314,13 +223,14 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-rc-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
             "$OUT/build-metadata.txt" \
+            "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F stock-base TWRP 3.3 test ${{ github.run_id }}" \
-            --notes "J720F Android 10 stock-base recovery with a source-built TWRP 3.3 payload." \
+            --title "J720F TWRP 3.3 v11-base RC ${{ github.run_id }}" \
+            --notes "Source-built J720F TWRP 3.3 release candidate preserving the proven v11 userspace architecture. Existing encrypted /data decryption remains unproven." \
             --prerelease
