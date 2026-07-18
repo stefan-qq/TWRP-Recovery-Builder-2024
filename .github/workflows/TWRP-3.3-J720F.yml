@@ -188,7 +188,10 @@ jobs:
             -v "$GITHUB_WORKSPACE/workspace:/home/twrp:rw" \
             -w /home/twrp \
             yshalsager/lineageos:14.1 bash <<'BUILD_EOF'
-          set -euxo pipefail
+          # Android 7.1's envsetup.sh is not compatible with Bash nounset (-u).
+          set -eo pipefail
+          set +u
+          set -x
           mkdir -p "$HOME"
           export ALLOW_MISSING_DEPENDENCIES=true
           source build/envsetup.sh
