@@ -1,4 +1,4 @@
-name: Build J720F v11-base TWRP 3.3 RC
+name: Build J720F v11-base TWRP 3.3 RC2
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: rc1-v11-functional
+        default: rc2-v11-functional
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -158,19 +158,34 @@ jobs:
           grep -q 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
           grep -q 'TW_INCLUDE_CRYPTO := true' BoardConfig.mk
           grep -q 'TW_EXCLUDE_MTP := true' BoardConfig.mk
+          grep -q 'TW_DEFAULT_EXTERNAL_STORAGE := true' BoardConfig.mk
           ! grep -q 'TW_INCLUDE_FBE' BoardConfig.mk
           ! grep -q 'TW_CRYPTO_USE_SYSTEM_VOLD' BoardConfig.mk
 
           grep -q '^/external_sd vfat /dev/block/mmcblk1p1 /dev/block/mmcblk1' recovery.fstab
           grep -q '^/efs[[:space:]]\+emmc' recovery.fstab
           grep -q '^/cpefs[[:space:]]\+emmc' recovery.fstab
+          grep -q '^/misc[[:space:]]\+emmc.*backup=1' recovery.fstab
           grep -q 'allow recovery vfat:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
           grep -q 'permissive init;' sepolicy/init.te
 
-          grep -q 'mount configfs none /sys/kernel/config' recovery/root/init.recovery.usb.rc
-          grep -q 'functions/ffs.adb' recovery/root/init.recovery.usb.rc
+          test -f recovery/root/init.rc
+          ! grep -q 'init.recovery.vold_decrypt.rc' recovery/root/init.rc
+          ! grep -q 'on property:service.adb.root=1' recovery/root/init.rc
+          ! grep -q 'on property:ro.debuggable=1' recovery/root/init.rc
+          ! grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.rc
+
+          test -L recovery/root/etc/fstab
+          test "$(readlink recovery/root/etc/fstab)" = /tmp/fstab
+          test -x recovery/root/sbin/j720f_usb_report.sh
+
+          grep -q 'mount configfs none /config' recovery/root/init.recovery.usb.rc
+          ! grep -q 'mount configfs none /sys/kernel/config' recovery/root/init.recovery.usb.rc
+          grep -q '/config/usb_gadget/g1/functions/ffs.adb' recovery/root/init.recovery.usb.rc
+          grep -q 'on property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
           grep -q '13600000.dwc3' recovery/root/init.recovery.usb.rc
+          ! grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.recovery.usb.rc
           ! grep -qi 'mtp' recovery/root/init.recovery.usb.rc
 
       - name: Build source TWRP 3.3 in the proven donor environment
@@ -226,7 +241,7 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch generation'
+            echo 'base=v11 UI/touch generation with RC2 USB ordering'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -270,6 +285,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 v11-base RC ${{ github.run_id }}" \
-            --notes "Source-built J720F TWRP 3.3 release candidate preserving the proven v11 userspace architecture. Existing encrypted /data decryption remains unproven." \
+            --title "J720F TWRP 3.3 v11-base RC2 ${{ github.run_id }}" \
+            --notes "RC2 preserves the proven v11 userspace, moves ConfigFS to /config, removes the legacy gadget trigger, and writes an offline USB report to microSD. Existing encrypted /data decryption remains unproven." \
             --prerelease
