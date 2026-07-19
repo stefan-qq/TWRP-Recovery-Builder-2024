@@ -37,6 +37,7 @@ def main() -> int:
     replacement = (
         "static bool selinux_is_enforcing(void)\n"
         "{\n"
+        "    (void)selinux_status_from_cmdline();\n"
         f'    INFO("{MARKER}\\n");\n'
         "    return false;\n"
         "}"
