@@ -121,13 +121,16 @@ jobs:
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
 
-      - name: Force recovery init SELinux permissive before rc actions
+      - name: Patch recovery SELinux startup and remove redundant helper
         shell: bash
         run: |
           set -euxo pipefail
           INIT_CPP=workspace/system/core/init/init.cpp
+          RECOVERY_MK=workspace/bootable/recovery/Android.mk
           python3 tools/patch_j720f_recovery_init.py "$INIT_CPP"
+          python3 tools/patch_j720f_recovery_makefile.py "$RECOVERY_MK"
           grep -Fq 'J720F recovery: forcing SELinux permissive' "$INIT_CPP"
+          ! grep -Eq '^[[:space:]]*permissive[.]sh[[:space:]]' "$RECOVERY_MK"
 
       - name: Install the donor clang revision
         shell: bash
@@ -268,6 +271,7 @@ jobs:
           grep -qx adbd "$OUT/sepolicy-permissive-domains.txt"
           cmp "$RECOVERY_POLICY" "$ROOT_POLICY"
           grep -aFq 'J720F recovery: forcing SELinux permissive' "$OUT/recovery/root/init"
+          test ! -e "$OUT/recovery/root/sbin/permissive.sh"
           BUILD_EOF
 
       - name: Finalize Samsung image and audit
