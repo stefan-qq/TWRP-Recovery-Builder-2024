@@ -1,4 +1,4 @@
-name: Build J720F TWRP 3.3 USB and userdata fix
+name: Build J720F TWRP 3.3 enforcing-policy fix
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-usb-data-fix
+        default: twrp-3.3-enforcing-policy
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -121,13 +121,16 @@ jobs:
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
 
-      - name: Patch recovery SELinux startup
+      - name: Patch legacy TWRP ORS FIFO paths
         shell: bash
         run: |
           set -euxo pipefail
-          INIT_CPP=workspace/system/core/init/init.cpp
-          python3 tools/patch_j720f_recovery_init.py "$INIT_CPP"
-          grep -Fq 'J720F recovery: forcing SELinux permissive' "$INIT_CPP"
+          ORS_HEADER=workspace/bootable/recovery/orscmd/orscmd.h
+          python3 tools/patch_twrp_ors_fifo.py "$ORS_HEADER"
+          grep -Fq '#define ORS_INPUT_FILE "/tmp/orsin"' "$ORS_HEADER"
+          grep -Fq '#define ORS_OUTPUT_FILE "/tmp/orsout"' "$ORS_HEADER"
+          ! grep -Fq '"/sbin/orsin"' "$ORS_HEADER"
+          ! grep -Fq '"/sbin/orsout"' "$ORS_HEADER"
 
       - name: Install the donor clang revision
         shell: bash
@@ -180,9 +183,19 @@ jobs:
 
           grep -q 'allow recovery vfat:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
-          grep -q '^permissive init;' sepolicy/init.te
-          grep -q '^permissive recovery;' sepolicy/recovery.te
-          grep -q '^permissive adbd;' sepolicy/adbd.te
+          ! grep -Rq '^permissive \(init\|recovery\|adbd\);' sepolicy
+          grep -q 'allow init configfs:file create_file_perms;' sepolicy/init.te
+          grep -q 'allow init functionfs:filesystem' sepolicy/init.te
+          grep -q 'allow init sysfs_usb:file rw_file_perms;' sepolicy/init.te
+          grep -q 'allow adbd functionfs:file rw_file_perms;' sepolicy/adbd.te
+          grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
+          grep -q 'allow recovery tmpfs:fifo_file create_file_perms;' sepolicy/recovery.te
+          grep -q 'create_pty(recovery)' sepolicy/recovery.te
+          grep -q 'set_prop(recovery, twrp_prop)' sepolicy/recovery.te
+          grep -q 'set_prop(recovery, system_radio_prop)' sepolicy/recovery.te
+          grep -q 'type twrp_prop, property_type;' sepolicy/property.te
+          grep -q '^ro.twrp\.' sepolicy/property_contexts
+          grep -q '^twrp\.' sepolicy/property_contexts
 
           test -f recovery/root/init.rc
           ! grep -q '/sbin/permissive.sh' recovery/root/init.rc
@@ -212,9 +225,9 @@ jobs:
           grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
           ! grep -qi 'mtp' recovery/root/init.recovery.usb.rc
-          grep -q 'service j720f_runtime_diag /sbin/sh /sbin/j720f_runtime_diag.sh' recovery/root/init.recovery.usb.rc
+          grep -q 'service j7diag /sbin/sh /sbin/j720f_runtime_diag.sh' recovery/root/init.recovery.usb.rc
           grep -q 'seclabel u:r:recovery:s0' recovery/root/init.recovery.usb.rc
-          grep -q 'start j720f_runtime_diag' recovery/root/init.recovery.usb.rc
+          grep -q 'start j7diag' recovery/root/init.recovery.usb.rc
           grep -q 'J720F_RUNTIME_DIAGNOSTICS.txt' recovery/root/sbin/j720f_runtime_diag.sh
           grep -q 'service_started=1' recovery/root/sbin/j720f_runtime_diag.sh
           ! grep -q '/sbin/twrp' recovery/root/sbin/j720f_runtime_diag.sh
@@ -258,16 +271,19 @@ jobs:
           test -f "$RECOVERY_POLICY"
           test -f "$ROOT_POLICY"
           test -x "$ANALYZE"
-          grep -Eq '^[[:space:]]*permissive[[:space:]]+init;' "$POLICY_CONF"
-          grep -Eq '^[[:space:]]*permissive[[:space:]]+recovery;' "$POLICY_CONF"
-          grep -Eq '^[[:space:]]*permissive[[:space:]]+adbd;' "$POLICY_CONF"
+          ! grep -Eq '^[[:space:]]*permissive[[:space:]]+(init|recovery|adbd);' "$POLICY_CONF"
+          grep -Fq 'type twrp_prop, property_type;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
-          grep -qx init "$OUT/sepolicy-permissive-domains.txt"
-          grep -qx recovery "$OUT/sepolicy-permissive-domains.txt"
-          grep -qx adbd "$OUT/sepolicy-permissive-domains.txt"
+          ! grep -qx init "$OUT/sepolicy-permissive-domains.txt"
+          ! grep -qx recovery "$OUT/sepolicy-permissive-domains.txt"
+          ! grep -qx adbd "$OUT/sepolicy-permissive-domains.txt"
           cmp "$RECOVERY_POLICY" "$ROOT_POLICY"
-          grep -aFq 'J720F recovery: forcing SELinux permissive' "$OUT/recovery/root/init"
+          ! grep -aFq 'J720F recovery: forcing SELinux permissive' "$OUT/recovery/root/init"
+          grep -aFq '/tmp/orsin' "$OUT/recovery/root/sbin/recovery"
+          grep -aFq '/tmp/orsout' "$OUT/recovery/root/sbin/recovery"
+          ! grep -aFq '/sbin/orsin' "$OUT/recovery/root/sbin/recovery"
+          ! grep -aFq '/sbin/orsout' "$OUT/recovery/root/sbin/recovery"
           BUILD_EOF
 
       - name: Finalize Samsung image and audit
@@ -298,7 +314,7 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with recovery-init SELinux and userdata-fstab fix'
+            echo 'base=v11 UI/touch with enforcing SELinux policy and writable runtime FIFOs'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -316,7 +332,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-usb-data-fix-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-enforcing-policy-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -334,7 +350,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-usb-data-fix-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-enforcing-policy-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
@@ -342,6 +358,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 USB and userdata fix ${{ github.run_id }}" \
-            --notes "Recovery-init forces SELinux permissive before rc actions because the boot-supplied runtime DT property overrides the image cmdline to enforcing. The build verifies permissive init/recovery/adbd domains, keeps MTP disabled until ADB is proven, removes the incorrect legacy userdata footer flag, and includes read-only runtime diagnostics." \
+            --title "J720F TWRP 3.3 enforcing-policy fix ${{ github.run_id }}" \
+            --notes "The Samsung kernel forces enforcing mode, so this build removes the ineffective permissive-init patch and grants explicit ConfigFS, FunctionFS, property, FIFO, and PTY permissions. MTP remains isolated until the common USB gadget path enumerates; stock Android 10 userdata remains encrypted and is not formatted." \
             --prerelease
