@@ -1,4 +1,4 @@
-name: Build J720F v11-base TWRP 3.3 RC2.3.1 safe diagnostics
+name: Build J720F TWRP 3.3 USB and userdata fix
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: rc2.3.1-safe-diagnostics
+        default: twrp-3.3-usb-data-fix
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -121,6 +121,14 @@ jobs:
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
 
+      - name: Force recovery init SELinux permissive before rc actions
+        shell: bash
+        run: |
+          set -euxo pipefail
+          INIT_CPP=workspace/system/core/init/init.cpp
+          python3 tools/patch_j720f_recovery_init.py "$INIT_CPP"
+          grep -Fq 'J720F recovery: forcing SELinux permissive' "$INIT_CPP"
+
       - name: Install the donor clang revision
         shell: bash
         run: |
@@ -155,22 +163,29 @@ jobs:
             '25fd9f99fcb520b117475c812302afdfd53f8f36dbcda6a9416429b2401ddafb  prebuilt/dt.img' \
             | sha256sum -c -
 
-          grep -q 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
-          grep -q 'TW_INCLUDE_CRYPTO := true' BoardConfig.mk
-          grep -q 'TW_EXCLUDE_MTP := true' BoardConfig.mk
-          grep -q 'TW_DEFAULT_EXTERNAL_STORAGE := true' BoardConfig.mk
+          grep -Fq 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
+          grep -Fq 'TW_INCLUDE_CRYPTO := true' BoardConfig.mk
+          grep -Fq 'TW_EXCLUDE_MTP := true' BoardConfig.mk
+          grep -Fq 'TW_DEFAULT_EXTERNAL_STORAGE := true' BoardConfig.mk
+          grep -Fq 'BOARD_SEPOLICY_DIRS += device/samsung/j7duolte/sepolicy' BoardConfig.mk
           ! grep -q 'TW_INCLUDE_FBE' BoardConfig.mk
           ! grep -q 'TW_CRYPTO_USE_SYSTEM_VOLD' BoardConfig.mk
 
           grep -q '^/external_sd vfat /dev/block/mmcblk1p1 /dev/block/mmcblk1' recovery.fstab
+          grep -q '^/data[[:space:]].*length=-20480' recovery.fstab
+          ! grep -q 'encryptable=footer' recovery.fstab
           grep -q '^/efs[[:space:]]\+emmc' recovery.fstab
           grep -q '^/cpefs[[:space:]]\+emmc' recovery.fstab
           grep -q '^/misc[[:space:]]\+emmc.*backup=1' recovery.fstab
+
           grep -q 'allow recovery vfat:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
-          grep -q 'permissive init;' sepolicy/init.te
+          grep -q '^permissive init;' sepolicy/init.te
+          grep -q '^permissive recovery;' sepolicy/recovery.te
+          grep -q '^permissive adbd;' sepolicy/adbd.te
 
           test -f recovery/root/init.rc
+          ! grep -q '/sbin/permissive.sh' recovery/root/init.rc
           ! grep -q 'init.recovery.vold_decrypt.rc' recovery/root/init.rc
           ! grep -q 'on property:service.adb.root=1' recovery/root/init.rc
           ! grep -q 'on property:ro.debuggable=1' recovery/root/init.rc
@@ -178,13 +193,16 @@ jobs:
 
           test -L recovery/root/etc/fstab
           test "$(readlink recovery/root/etc/fstab)" = /tmp/fstab
-          test -x recovery/root/sbin/j720f_rc231_diag.sh
+          test -x recovery/root/sbin/j720f_runtime_diag.sh
           test ! -e recovery/root/sbin/postrecoveryboot.sh
+          test ! -e recovery/root/sbin/j720f_rc231_diag.sh
           test ! -e recovery/root/sbin/j720f_usb_report.sh
 
           grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.rc
           grep -q 'mount configfs none /sys/kernel/config' recovery/root/init.recovery.usb.rc
           ! grep -q 'mount configfs none /config' recovery/root/init.recovery.usb.rc
+          ! grep -q '/sys/fs/selinux/enforce' recovery/root/init.recovery.usb.rc
+          ! grep -q '/sbin/permissive.sh' recovery/root/init.recovery.usb.rc
           grep -q '/sys/kernel/config/usb_gadget/g1/functions/ffs.adb' recovery/root/init.recovery.usb.rc
           grep -q '/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb' recovery/root/init.recovery.usb.rc
           grep -q 'on property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
@@ -193,17 +211,16 @@ jobs:
           grep -q 'write /sys/class/android_usb/android0/functions adb' recovery/root/init.recovery.usb.rc
           grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
-          ! grep -q 'j720f_usb_report' recovery/root/init.recovery.usb.rc
           ! grep -qi 'mtp' recovery/root/init.recovery.usb.rc
-          grep -q 'service j720f_rc231_diag /sbin/sh /sbin/j720f_rc231_diag.sh' recovery/root/init.recovery.usb.rc
+          grep -q 'service j720f_runtime_diag /sbin/sh /sbin/j720f_runtime_diag.sh' recovery/root/init.recovery.usb.rc
           grep -q 'seclabel u:r:recovery:s0' recovery/root/init.recovery.usb.rc
-          grep -q 'start j720f_rc231_diag' recovery/root/init.recovery.usb.rc
-          grep -q 'J720F_RC231_RUNTIME.txt' recovery/root/sbin/j720f_rc231_diag.sh
-          grep -q 'service_started=1' recovery/root/sbin/j720f_rc231_diag.sh
-          ! grep -q '/sbin/twrp' recovery/root/sbin/j720f_rc231_diag.sh
-          ! grep -q 'mount -t' recovery/root/sbin/j720f_rc231_diag.sh
-          ! grep -q 'ctl.stop' recovery/root/sbin/j720f_rc231_diag.sh
-          ! grep -q 'ctl.start' recovery/root/sbin/j720f_rc231_diag.sh
+          grep -q 'start j720f_runtime_diag' recovery/root/init.recovery.usb.rc
+          grep -q 'J720F_RUNTIME_DIAGNOSTICS.txt' recovery/root/sbin/j720f_runtime_diag.sh
+          grep -q 'service_started=1' recovery/root/sbin/j720f_runtime_diag.sh
+          ! grep -q '/sbin/twrp' recovery/root/sbin/j720f_runtime_diag.sh
+          ! grep -q 'mount -t' recovery/root/sbin/j720f_runtime_diag.sh
+          ! grep -q 'ctl.stop' recovery/root/sbin/j720f_runtime_diag.sh
+          ! grep -q 'ctl.start' recovery/root/sbin/j720f_runtime_diag.sh
 
       - name: Build source TWRP 3.3 in the proven donor environment
         shell: bash
@@ -229,7 +246,28 @@ jobs:
           source build/envsetup.sh
           lunch omni_j7duolte-eng
           make -j"$(nproc)" recoveryimage
-          test -f out/target/product/j7duolte/recovery.img
+
+          OUT=out/target/product/j7duolte
+          POLICY_CONF="$OUT/obj/ETC/sepolicy.recovery_intermediates/policy_recovery.conf"
+          RECOVERY_POLICY="$OUT/obj/ETC/sepolicy.recovery_intermediates/sepolicy.recovery"
+          ROOT_POLICY="$OUT/recovery/root/sepolicy"
+          ANALYZE=out/host/linux-x86/bin/sepolicy-analyze
+
+          test -f "$OUT/recovery.img"
+          test -f "$POLICY_CONF"
+          test -f "$RECOVERY_POLICY"
+          test -f "$ROOT_POLICY"
+          test -x "$ANALYZE"
+          grep -Eq '^[[:space:]]*permissive[[:space:]]+init;' "$POLICY_CONF"
+          grep -Eq '^[[:space:]]*permissive[[:space:]]+recovery;' "$POLICY_CONF"
+          grep -Eq '^[[:space:]]*permissive[[:space:]]+adbd;' "$POLICY_CONF"
+          "$ANALYZE" "$RECOVERY_POLICY" permissive \
+            | tee "$OUT/sepolicy-permissive-domains.txt"
+          grep -qx init "$OUT/sepolicy-permissive-domains.txt"
+          grep -qx recovery "$OUT/sepolicy-permissive-domains.txt"
+          grep -qx adbd "$OUT/sepolicy-permissive-domains.txt"
+          cmp "$RECOVERY_POLICY" "$ROOT_POLICY"
+          grep -aFq 'J720F recovery: forcing SELinux permissive' "$OUT/recovery/root/init"
           BUILD_EOF
 
       - name: Finalize Samsung image and audit
@@ -245,6 +283,8 @@ jobs:
           python3 "$TREE/tools/audit_recovery.py" "$IMAGE" \
             --tree "$TREE" \
             --out-dir "$OUT/recovery-audit"
+          cp "$OUT/sepolicy-permissive-domains.txt" \
+            "$OUT/recovery-audit/sepolicy-permissive-domains.txt"
           test "$(stat -c %s "$IMAGE")" -le "$RECOVERY_LIMIT"
 
       - name: Package Heimdall/Odin tar and metadata
@@ -258,7 +298,7 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with RC2.3.1 nonblocking runtime diagnostics'
+            echo 'base=v11 UI/touch with recovery-init SELinux and userdata-fstab fix'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -276,7 +316,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-rc231-safe-diagnostics-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-usb-data-fix-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -294,7 +334,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-rc231-safe-diagnostics-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-usb-data-fix-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
@@ -302,6 +342,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 v11-base RC2.3.1 safe diagnostics ${{ github.run_id }}" \
-            --notes "RC2.3.1 removes the blocking TWRP postrecovery hook and restores the original TWRP ORS FIFO code. Its read-only diagnostics run asynchronously in the recovery domain, never invoke twrp, never mount filesystems, never restart adbd, and leave /data footer handling unchanged for isolation." \
+            --title "J720F TWRP 3.3 USB and userdata fix ${{ github.run_id }}" \
+            --notes "Recovery-init forces SELinux permissive before rc actions because the boot-supplied runtime DT property overrides the image cmdline to enforcing. The build verifies permissive init/recovery/adbd domains, keeps MTP disabled until ADB is proven, removes the incorrect legacy userdata footer flag, and includes read-only runtime diagnostics." \
             --prerelease
