@@ -1,4 +1,4 @@
-name: Build J720F v11-base TWRP 3.3 RC2
+name: Build J720F v11-base TWRP 3.3 RC2.3 diagnostics
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: rc2-v11-functional
+        default: rc2.3-runtime-diagnostics
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -121,6 +121,34 @@ jobs:
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
 
+      - name: Move legacy TWRP ORS FIFOs from rootfs to tmpfs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("workspace/bootable/recovery/orscmd/orscmd.h")
+          text = path.read_text()
+          old = (
+              '#define ORS_INPUT_FILE "/sbin/orsin"\n'
+              '#define ORS_OUTPUT_FILE "/sbin/orsout"\n'
+          )
+          new = (
+              '#define ORS_INPUT_FILE "/tmp/orsin"\n'
+              '#define ORS_OUTPUT_FILE "/tmp/orsout"\n'
+          )
+          if text.count(old) != 1:
+              raise SystemExit("unexpected ORS FIFO definitions in pinned TWRP source")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          grep -q '#define ORS_INPUT_FILE "/tmp/orsin"' \
+            workspace/bootable/recovery/orscmd/orscmd.h
+          grep -q '#define ORS_OUTPUT_FILE "/tmp/orsout"' \
+            workspace/bootable/recovery/orscmd/orscmd.h
+          ! grep -q '"/sbin/orsin"' workspace/bootable/recovery/orscmd/orscmd.h
+          ! grep -q '"/sbin/orsout"' workspace/bootable/recovery/orscmd/orscmd.h
+
       - name: Install the donor clang revision
         shell: bash
         run: |
@@ -168,6 +196,7 @@ jobs:
           grep -q '^/misc[[:space:]]\+emmc.*backup=1' recovery.fstab
           grep -q 'allow recovery vfat:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
+          grep -q 'allow recovery tmpfs:fifo_file create_file_perms;' sepolicy/recovery.te
           grep -q 'permissive init;' sepolicy/init.te
 
           test -f recovery/root/init.rc
@@ -178,15 +207,25 @@ jobs:
 
           test -L recovery/root/etc/fstab
           test "$(readlink recovery/root/etc/fstab)" = /tmp/fstab
-          test -x recovery/root/sbin/j720f_usb_report.sh
+          test -x recovery/root/sbin/postrecoveryboot.sh
+          test ! -e recovery/root/sbin/j720f_usb_report.sh
 
-          grep -q 'mount configfs none /config' recovery/root/init.recovery.usb.rc
-          ! grep -q 'mount configfs none /sys/kernel/config' recovery/root/init.recovery.usb.rc
-          grep -q '/config/usb_gadget/g1/functions/ffs.adb' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.rc
+          grep -q 'mount configfs none /sys/kernel/config' recovery/root/init.recovery.usb.rc
+          ! grep -q 'mount configfs none /config' recovery/root/init.recovery.usb.rc
+          grep -q '/sys/kernel/config/usb_gadget/g1/functions/ffs.adb' recovery/root/init.recovery.usb.rc
+          grep -q '/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb' recovery/root/init.recovery.usb.rc
           grep -q 'on property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
           grep -q '13600000.dwc3' recovery/root/init.recovery.usb.rc
-          ! grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.recovery.usb.rc
+          grep -q 'write /sys/class/android_usb/android0/f_ffs/aliases adb' recovery/root/init.recovery.usb.rc
+          grep -q 'write /sys/class/android_usb/android0/functions adb' recovery/root/init.recovery.usb.rc
+          grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
+          ! grep -q 'j720f_usb_report' recovery/root/init.recovery.usb.rc
           ! grep -qi 'mtp' recovery/root/init.recovery.usb.rc
+          grep -q 'J720F_RC23_RUNTIME.txt' recovery/root/sbin/postrecoveryboot.sh
+          grep -q 'FUNCTIONFS MOUNT RETRY' recovery/root/sbin/postrecoveryboot.sh
+          grep -q 'FIFO CREATE TEST' recovery/root/sbin/postrecoveryboot.sh
 
       - name: Build source TWRP 3.3 in the proven donor environment
         shell: bash
@@ -241,7 +280,7 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch generation with RC2 USB ordering'
+            echo 'base=v11 UI/touch with RC2.3 independent runtime diagnostics'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -259,7 +298,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-rc-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-rc23-diagnostics-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -277,7 +316,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-rc-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-rc23-diagnostics-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
@@ -285,6 +324,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 v11-base RC2 ${{ github.run_id }}" \
-            --notes "RC2 preserves the proven v11 userspace, moves ConfigFS to /config, removes the legacy gadget trigger, and writes an offline USB report to microSD. Existing encrypted /data decryption remains unproven." \
+            --title "J720F TWRP 3.3 v11-base RC2.3 diagnostics ${{ github.run_id }}" \
+            --notes "RC2.3 is a non-release diagnostic build. It preserves v11 UI/touch, uses the CUL1 stock-kernel USB handoff, records init action markers, captures pre/post FunctionFS and ConfigFS state from TWRP postrecoveryboot, moves ORS FIFOs to /tmp, and grants the recovery-domain tmpfs FIFO permission. /data footer handling is intentionally unchanged for isolation." \
             --prerelease
