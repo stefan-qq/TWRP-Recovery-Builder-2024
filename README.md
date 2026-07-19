@@ -24,3 +24,10 @@ It also verifies that the compiled recovery policy contains permissive
 recovery ramdisk is the one that was audited. The device tree removes the
 incorrect legacy `encryptable=footer` userdata flag, retains the working
 microSD setup, and keeps MTP disabled until ADB is proven stable on hardware.
+
+The pinned TWRP source still packages its own `sbin/permissive.sh` prebuilt in
+engineering builds. It is intentionally left untouched because no init rc file
+invokes it; recovery permissive mode is selected earlier by the patched init
+binary. The final audit rejects references to the late helper rather than the
+unused upstream file itself.
+
