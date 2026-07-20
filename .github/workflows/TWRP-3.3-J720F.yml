@@ -177,6 +177,9 @@ jobs:
           test -x recovery/root/system/bin/linker64
           test -x recovery/root/system/bin/sh
           test -f recovery/root/system/etc/ld.config.txt
+          test -f recovery/root/system/etc/j720f-stock-adbd-bundle.txt
+          grep -Fq 'source=J720F CUL1 stock recovery' \
+            recovery/root/system/etc/j720f-stock-adbd-bundle.txt
           echo \
             'e5a1dff495b94d469ec4cfcda60efbc2a674c769acbf7c6447f5e994542ee84a  recovery/root/system/bin/adbd' \
             | sha256sum -c -
@@ -320,6 +323,9 @@ jobs:
           test -x "$OUT/recovery/root/system/bin/adbd"
           test -x "$OUT/recovery/root/system/bin/linker64"
           test -x "$OUT/recovery/root/system/bin/sh"
+          test -f "$OUT/recovery/root/system/etc/j720f-stock-adbd-bundle.txt"
+          grep -Fq 'source=J720F CUL1 stock recovery' \
+            "$OUT/recovery/root/system/etc/j720f-stock-adbd-bundle.txt"
           echo \
             'e5a1dff495b94d469ec4cfcda60efbc2a674c769acbf7c6447f5e994542ee84a  '"$OUT"'/recovery/root/system/bin/adbd' \
             | sha256sum -c -
