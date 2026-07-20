@@ -1,4 +1,4 @@
-name: Build J720F TWRP 3.3 native FunctionFS ADB su-policy fix
+name: Build J720F TWRP 3.3 native FunctionFS ADB in adbd domain
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-native-ffs-su-policy
+        default: twrp-3.3-native-ffs-adbd-domain
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -189,11 +189,7 @@ jobs:
           grep -q 'allow init sysfs_usb:file rw_file_perms;' sepolicy/init.te
           grep -q 'allow adbd functionfs:file rw_file_perms;' sepolicy/adbd.te
           grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
-          test -f sepolicy/su.te
-          grep -q 'allow su functionfs:filesystem getattr;' sepolicy/su.te
-          grep -q 'allow su functionfs:dir r_dir_perms;' sepolicy/su.te
-          grep -q 'allow su functionfs:file rw_file_perms;' sepolicy/su.te
-          grep -q 'set_prop(su, ffs_prop)' sepolicy/su.te
+          test ! -e sepolicy/su.te
           ! grep -q 'adb_device:chr_file' sepolicy/adbd.te
           grep -q 'allow recovery tmpfs:fifo_file create_file_perms;' sepolicy/recovery.te
           grep -q 'create_pty(recovery)' sepolicy/recovery.te
@@ -209,7 +205,8 @@ jobs:
           ! grep -q 'on property:service.adb.root=1' recovery/root/init.rc
           ! grep -q 'on property:ro.debuggable=1' recovery/root/init.rc
           ! grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.rc
-          grep -q 'service adbd /sbin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery' recovery/root/init.rc
+          grep -q 'service adbd /sbin/adbd --device_banner=recovery' recovery/root/init.rc
+          ! grep -q -- '--root_seclabel' recovery/root/init.rc
           ! grep -q 'setenv LD_LIBRARY_PATH /system/lib64' recovery/root/init.rc
           grep -q 'setprop j720f.usb.native_prepare 1' recovery/root/init.rc
 
@@ -227,6 +224,7 @@ jobs:
           grep -q 'on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
           grep -q 'write /sys/kernel/config/usb_gadget/g1/UDC ${sys.usb.controller}' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.transport native-android71-ffs' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.adbd_domain_only 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.udc_bind_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
@@ -246,10 +244,13 @@ jobs:
           grep -q '/dev/usb-ffs/adb/ep1' recovery/root/ueventd.samsungexynos7885.rc
           grep -q '/dev/usb-ffs/adb/ep2' recovery/root/ueventd.samsungexynos7885.rc
           grep -q 'service j7diag /sbin/sh /sbin/j720f_runtime_diag.sh' recovery/root/init.recovery.usb.rc
+          grep -q 'group root shell readproc' recovery/root/init.recovery.usb.rc
           grep -q 'seclabel u:r:recovery:s0' recovery/root/init.recovery.usb.rc
           grep -q 'start j7diag' recovery/root/init.recovery.usb.rc
           grep -q 'J720F_RUNTIME_DIAGNOSTICS.txt' recovery/root/sbin/j720f_runtime_diag.sh
           grep -q 'NATIVE ANDROID 7.1 RECOVERY ADBD' recovery/root/sbin/j720f_runtime_diag.sh
+          grep -q 'ADBD PROCESS / CONTEXT / FDS' recovery/root/sbin/j720f_runtime_diag.sh
+          grep -q 'pidof adbd' recovery/root/sbin/j720f_runtime_diag.sh
           ! grep -q '/sbin/twrp' recovery/root/sbin/j720f_runtime_diag.sh
           ! grep -q 'mount -t' recovery/root/sbin/j720f_runtime_diag.sh
           ! grep -q 'ctl.stop' recovery/root/sbin/j720f_runtime_diag.sh
@@ -293,6 +294,12 @@ jobs:
           test -x "$ANALYZE"
           ! grep -Eq '^[[:space:]]*permissive[[:space:]]+init;' "$POLICY_CONF"
           grep -Fq 'type twrp_prop, property_type;' "$POLICY_CONF"
+          grep -E '^(allow|dontaudit) (adbd|su) (functionfs|ffs_prop)' "$POLICY_CONF" \
+            | tee "$OUT/sepolicy-adbd-usb-rules.txt"
+          grep -q '^allow adbd functionfs:file {' "$POLICY_CONF"
+          grep -q '^allow adbd ffs_prop:property_service set;' "$POLICY_CONF"
+          ! grep -q '^allow su functionfs:' "$POLICY_CONF"
+          ! grep -q '^allow su ffs_prop:property_service set;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
           if grep -Eq '^init$' "$OUT/sepolicy-permissive-domains.txt"; then
@@ -333,6 +340,8 @@ jobs:
             --out-dir "$OUT/recovery-audit"
           cp "$OUT/sepolicy-permissive-domains.txt" \
             "$OUT/recovery-audit/sepolicy-permissive-domains.txt"
+          cp "$OUT/sepolicy-adbd-usb-rules.txt" \
+            "$OUT/recovery-audit/sepolicy-adbd-usb-rules.txt"
           test "$(stat -c %s "$IMAGE")" -le "$RECOVERY_LIMIT"
 
       - name: Package Heimdall/Odin tar and metadata
@@ -346,7 +355,7 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with native Android 7.1 FunctionFS adbd and explicit su-domain USB policy'
+            echo 'base=v11 UI/touch with native Android 7.1 FunctionFS adbd kept in u:r:adbd:s0'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
