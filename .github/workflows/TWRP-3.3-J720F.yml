@@ -365,15 +365,15 @@ jobs:
             echo 'stock_base_assembly=false'
           } > "$OUT/build-metadata.txt"
 
-          sha256sum \
-            "$OUT/recovery.img" \
-            "$OUT/recovery.tar" \
-            > "$OUT/SHA256SUMS.txt"
+          (
+            cd "$OUT"
+            sha256sum recovery.img recovery.tar > SHA256SUMS.txt
+          )
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-native-ffs-su-policy-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-native-ffs-adbd-domain-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -391,7 +391,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-native-ffs-su-policy-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-native-ffs-adbd-domain-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
@@ -399,6 +399,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 native Android 7.1 FunctionFS ADB ${{ github.run_id }}" \
-            --notes "This build keeps one coherent Android 7.1 recovery userspace for init, TWRP, bionic, properties and adbd, while retaining the exact CUL1 stock kernel/DT and Samsung FunctionFS ConfigFS gadget sequence. It removes the incompatible Android 10 adbd/linker/library experiment. Only adbd is permissive for bring-up; init remains enforcing. MTP remains isolated, and encrypted userdata is not formatted." \
+            --title "J720F TWRP 3.3 native adbd-domain diagnostic ${{ github.run_id }}" \
+            --notes "Diagnostic build: native Android 7.1 adbd stays UID 0 in u:r:adbd:s0 without --root_seclabel. The exact CUL1 kernel/DT and Samsung FunctionFS ConfigFS sequence are retained; readproc diagnostics capture the adbd process state. MTP remains excluded, and the image never formats userdata automatically. Not a stable community release." \
             --prerelease
