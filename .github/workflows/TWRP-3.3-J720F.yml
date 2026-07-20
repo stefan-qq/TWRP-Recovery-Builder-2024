@@ -1,4 +1,4 @@
-name: Build J720F TWRP 3.3 enforcing-policy fix
+name: Build J720F TWRP 3.3 direct legacy ADB
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-enforcing-policy
+        default: twrp-3.3-legacy-adb
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -185,10 +185,11 @@ jobs:
           grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
           ! grep -Rq '^permissive \(init\|recovery\|adbd\);' sepolicy
           grep -q 'allow init configfs:file create_file_perms;' sepolicy/init.te
-          grep -q 'allow init functionfs:filesystem' sepolicy/init.te
+          ! grep -q 'functionfs:filesystem' sepolicy/init.te
           grep -q 'allow init sysfs_usb:file rw_file_perms;' sepolicy/init.te
-          grep -q 'allow adbd functionfs:file rw_file_perms;' sepolicy/adbd.te
-          grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
+          grep -q 'allow adbd adb_device:chr_file rw_file_perms;' sepolicy/adbd.te
+          ! grep -q 'functionfs:' sepolicy/adbd.te
+          ! grep -q 'ffs_prop' sepolicy/adbd.te
           grep -q 'allow recovery tmpfs:fifo_file create_file_perms;' sepolicy/recovery.te
           grep -q 'create_pty(recovery)' sepolicy/recovery.te
           grep -q 'set_prop(recovery, twrp_prop)' sepolicy/recovery.te
@@ -211,20 +212,35 @@ jobs:
           test ! -e recovery/root/sbin/j720f_rc231_diag.sh
           test ! -e recovery/root/sbin/j720f_usb_report.sh
 
-          grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.rc
+          grep -q 'setprop j720f.usb.legacy_prepare_action 1' recovery/root/init.rc
+          if grep -q 'mount functionfs\|/dev/usb-ffs' recovery/root/init.rc; then
+            echo 'FunctionFS still present in init.rc' >&2
+            exit 1
+          fi
           grep -q 'mount configfs none /sys/kernel/config' recovery/root/init.recovery.usb.rc
-          ! grep -q 'mount configfs none /config' recovery/root/init.recovery.usb.rc
-          ! grep -q '/sys/fs/selinux/enforce' recovery/root/init.recovery.usb.rc
-          ! grep -q '/sbin/permissive.sh' recovery/root/init.recovery.usb.rc
-          grep -q '/sys/kernel/config/usb_gadget/g1/functions/ffs.adb' recovery/root/init.recovery.usb.rc
-          grep -q '/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb' recovery/root/init.recovery.usb.rc
-          grep -q 'on property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
-          grep -q '13600000.dwc3' recovery/root/init.recovery.usb.rc
-          grep -q 'write /sys/class/android_usb/android0/f_ffs/aliases adb' recovery/root/init.recovery.usb.rc
-          grep -q 'write /sys/class/android_usb/android0/functions adb' recovery/root/init.recovery.usb.rc
-          grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.recovery.usb.rc
+          if grep -q 'mount configfs none /config' recovery/root/init.recovery.usb.rc; then
+            echo 'Rejected /config mountpoint remains' >&2
+            exit 1
+          fi
+          if grep -q '/sys/fs/selinux/enforce\|/sbin/permissive.sh' recovery/root/init.recovery.usb.rc; then
+            echo 'Late permissive workaround remains' >&2
+            exit 1
+          fi
+          grep -q '/sys/kernel/config/usb_gadget/g1/functions/adb.0' recovery/root/init.recovery.usb.rc
+          grep -q '/sys/kernel/config/usb_gadget/g1/configs/c.1/adb.0' recovery/root/init.recovery.usb.rc
+          grep -q 'write /sys/kernel/config/usb_gadget/g1/UDC ${sys.usb.controller}' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.udc_bind_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
-          ! grep -qi 'mtp' recovery/root/init.recovery.usb.rc
+          if grep -q 'functions/ffs.adb\|configs/c.1/ffs.adb\|sys.usb.ffs.ready=1\|android_usb/android0/f_ffs\|android_usb/android0/enable 1' recovery/root/init.recovery.usb.rc; then
+            echo 'FunctionFS/android_usb path remains in legacy ADB rc' >&2
+            exit 1
+          fi
+          if grep -qi 'mtp' recovery/root/init.recovery.usb.rc; then
+            echo 'MTP must remain isolated in this transport test' >&2
+            exit 1
+          fi
+          grep -q '/dev/android_adb' recovery/root/ueventd.samsungexynos7885.rc
+          grep -q '/dev/android_adb_enable' recovery/root/ueventd.samsungexynos7885.rc
           grep -q 'service j7diag /sbin/sh /sbin/j720f_runtime_diag.sh' recovery/root/init.recovery.usb.rc
           grep -q 'seclabel u:r:recovery:s0' recovery/root/init.recovery.usb.rc
           grep -q 'start j7diag' recovery/root/init.recovery.usb.rc
@@ -275,11 +291,17 @@ jobs:
           grep -Fq 'type twrp_prop, property_type;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
-          ! grep -qx init "$OUT/sepolicy-permissive-domains.txt"
-          ! grep -qx recovery "$OUT/sepolicy-permissive-domains.txt"
-          ! grep -qx adbd "$OUT/sepolicy-permissive-domains.txt"
+          if grep -Eq '^(init|adbd)$' "$OUT/sepolicy-permissive-domains.txt"; then
+            echo 'init or adbd unexpectedly permissive' >&2
+            exit 1
+          fi
           cmp "$RECOVERY_POLICY" "$ROOT_POLICY"
-          ! grep -aFq 'J720F recovery: forcing SELinux permissive' "$OUT/recovery/root/init"
+          if grep -aFq 'J720F recovery: forcing SELinux permissive' "$OUT/recovery/root/init"; then
+            echo 'Disproven forced-permissive init patch remains' >&2
+            exit 1
+          fi
+          grep -aFq '/dev/android_adb' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq '/dev/usb-ffs/adb/ep0' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/orsin' "$OUT/recovery/root/sbin/recovery"
           grep -aFq '/tmp/orsout' "$OUT/recovery/root/sbin/recovery"
           ! grep -aFq '/sbin/orsin' "$OUT/recovery/root/sbin/recovery"
@@ -314,7 +336,7 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with enforcing SELinux policy and writable runtime FIFOs'
+            echo 'base=v11 UI/touch with working terminal and direct legacy ConfigFS adb.0 transport'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -332,7 +354,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-enforcing-policy-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-legacy-adb-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -350,7 +372,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-enforcing-policy-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-legacy-adb-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
@@ -358,6 +380,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 enforcing-policy fix ${{ github.run_id }}" \
-            --notes "The Samsung kernel forces enforcing mode, so this build removes the ineffective permissive-init patch and grants explicit ConfigFS, FunctionFS, property, FIFO, and PTY permissions. MTP remains isolated until the common USB gadget path enumerates; stock Android 10 userdata remains encrypted and is not formatted." \
+            --title "J720F TWRP 3.3 direct legacy ADB ${{ github.run_id }}" \
+            --notes "This build keeps the proven TWRP UI, terminal, microSD, FIFO and PTY fixes, removes the non-working FunctionFS path, and reproduces the uploaded hybrid image's direct ConfigFS adb.0 gadget using the donor Android 7.1 adbd legacy /dev/android_adb transport. MTP remains isolated for this hardware test; stock Android 10 userdata remains encrypted and is not formatted." \
             --prerelease
