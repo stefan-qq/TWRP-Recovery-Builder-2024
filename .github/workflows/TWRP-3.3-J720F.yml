@@ -1,4 +1,4 @@
-name: Build J720F TWRP 3.3 native Android 7.1 FunctionFS ADB
+name: Build J720F TWRP 3.3 native FunctionFS ADB su-policy fix
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-native-ffs-adbd
+        default: twrp-3.3-native-ffs-su-policy
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -183,12 +183,17 @@ jobs:
           grep -q 'allow recovery vfat:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
           ! grep -Rq '^permissive \(init\|recovery\);' sepolicy
-          grep -q '^permissive adbd;' sepolicy/adbd.te
+          ! grep -q '^permissive adbd;' sepolicy/adbd.te
           grep -q 'allow init configfs:file create_file_perms;' sepolicy/init.te
           grep -q 'allow init functionfs:filesystem' sepolicy/init.te
           grep -q 'allow init sysfs_usb:file rw_file_perms;' sepolicy/init.te
           grep -q 'allow adbd functionfs:file rw_file_perms;' sepolicy/adbd.te
           grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
+          test -f sepolicy/su.te
+          grep -q 'allow su functionfs:filesystem getattr;' sepolicy/su.te
+          grep -q 'allow su functionfs:dir r_dir_perms;' sepolicy/su.te
+          grep -q 'allow su functionfs:file rw_file_perms;' sepolicy/su.te
+          grep -q 'set_prop(su, ffs_prop)' sepolicy/su.te
           ! grep -q 'adb_device:chr_file' sepolicy/adbd.te
           grep -q 'allow recovery tmpfs:fifo_file create_file_perms;' sepolicy/recovery.te
           grep -q 'create_pty(recovery)' sepolicy/recovery.te
@@ -287,7 +292,6 @@ jobs:
           test -f "$ROOT_POLICY"
           test -x "$ANALYZE"
           ! grep -Eq '^[[:space:]]*permissive[[:space:]]+init;' "$POLICY_CONF"
-          grep -Eq '^[[:space:]]*permissive[[:space:]]+adbd;' "$POLICY_CONF"
           grep -Fq 'type twrp_prop, property_type;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
@@ -295,7 +299,6 @@ jobs:
             echo 'init unexpectedly permissive' >&2
             exit 1
           fi
-          grep -Eq '^adbd$' "$OUT/sepolicy-permissive-domains.txt"
           cmp "$RECOVERY_POLICY" "$ROOT_POLICY"
           if grep -aFq 'J720F recovery: forcing SELinux permissive' "$OUT/recovery/root/init"; then
             echo 'Disproven forced-permissive init patch remains' >&2
@@ -343,7 +346,7 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with working terminal and native Android 7.1 FunctionFS adbd transport'
+            echo 'base=v11 UI/touch with native Android 7.1 FunctionFS adbd and explicit su-domain USB policy'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -361,7 +364,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-native-ffs-adbd-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-native-ffs-su-policy-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -379,7 +382,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-native-ffs-adbd-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-native-ffs-su-policy-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \

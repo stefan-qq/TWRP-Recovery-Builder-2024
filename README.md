@@ -37,3 +37,10 @@ MTP remains excluded for this isolated transport test. It will be enabled only
 after the phone enumerates with this direct ADB route, so a second USB function
 cannot obscure the result. Existing Android 10 userdata remains encrypted and
 is not formatted by this build.
+
+## Native FunctionFS su-domain policy build
+
+The `twrp-3.3-native-ffs-su-policy` workflow keeps the coherent Android 7.1
+recovery userspace and grants FunctionFS plus `sys.usb.ffs.ready` access to the
+`su` domain used by rooted adbd after its SELinux transition. The audit rejects
+reliance on `permissive adbd` and requires the explicit su-domain rules.
