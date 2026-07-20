@@ -125,12 +125,26 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          reject_grep() {
+            local label="$1"
+            shift
+            if grep "$@"; then
+              echo "Rejected: $label" >&2
+              exit 1
+            else
+              local status=$?
+              if [ "$status" -ne 1 ]; then
+                echo "grep failed while checking: $label" >&2
+                exit "$status"
+              fi
+            fi
+          }
           ORS_HEADER=workspace/bootable/recovery/orscmd/orscmd.h
           python3 tools/patch_twrp_ors_fifo.py "$ORS_HEADER"
           grep -Fq '#define ORS_INPUT_FILE "/tmp/orsin"' "$ORS_HEADER"
           grep -Fq '#define ORS_OUTPUT_FILE "/tmp/orsout"' "$ORS_HEADER"
-          ! grep -Fq '"/sbin/orsin"' "$ORS_HEADER"
-          ! grep -Fq '"/sbin/orsout"' "$ORS_HEADER"
+          reject_grep 'legacy /sbin ORS input path remains' -Fq '"/sbin/orsin"' "$ORS_HEADER"
+          reject_grep 'legacy /sbin ORS output path remains' -Fq '"/sbin/orsout"' "$ORS_HEADER"
 
       - name: Install the donor clang revision
         shell: bash
@@ -146,6 +160,20 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          reject_grep() {
+            local label="$1"
+            shift
+            if grep "$@"; then
+              echo "Rejected: $label" >&2
+              exit 1
+            else
+              local status=$?
+              if [ "$status" -ne 1 ]; then
+                echo "grep failed while checking: $label" >&2
+                exit "$status"
+              fi
+            fi
+          }
           rm -rf "workspace/$DEVICE_PATH"
           git clone --depth=1 --branch "${{ inputs.DEVICE_TREE_BRANCH }}" \
             "${{ inputs.DEVICE_TREE }}" \
@@ -170,27 +198,27 @@ jobs:
           grep -Fq 'TW_EXCLUDE_MTP := true' BoardConfig.mk
           grep -Fq 'TW_DEFAULT_EXTERNAL_STORAGE := true' BoardConfig.mk
           grep -Fq 'BOARD_SEPOLICY_DIRS += device/samsung/j7duolte/sepolicy' BoardConfig.mk
-          ! grep -q 'TW_INCLUDE_FBE' BoardConfig.mk
-          ! grep -q 'TW_CRYPTO_USE_SYSTEM_VOLD' BoardConfig.mk
+          reject_grep 'TW_INCLUDE_FBE remains enabled' -q 'TW_INCLUDE_FBE' BoardConfig.mk
+          reject_grep 'system vold crypto remains enabled' -q 'TW_CRYPTO_USE_SYSTEM_VOLD' BoardConfig.mk
 
           grep -q '^/external_sd vfat /dev/block/mmcblk1p1 /dev/block/mmcblk1' recovery.fstab
           grep -q '^/data[[:space:]].*length=-20480' recovery.fstab
-          ! grep -q 'encryptable=footer' recovery.fstab
+          reject_grep 'rejected legacy crypto footer remains' -q 'encryptable=footer' recovery.fstab
           grep -q '^/efs[[:space:]]\+emmc' recovery.fstab
           grep -q '^/cpefs[[:space:]]\+emmc' recovery.fstab
           grep -q '^/misc[[:space:]]\+emmc.*backup=1' recovery.fstab
 
           grep -q 'allow recovery vfat:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
-          ! grep -Rq '^permissive \(init\|recovery\);' sepolicy
-          ! grep -q '^permissive adbd;' sepolicy/adbd.te
+          reject_grep 'device policy makes init or recovery permissive' -Rq '^permissive \(init\|recovery\);' sepolicy
+          reject_grep 'adbd is still explicitly permissive' -q '^permissive adbd;' sepolicy/adbd.te
           grep -q 'allow init configfs:file create_file_perms;' sepolicy/init.te
           grep -q 'allow init functionfs:filesystem' sepolicy/init.te
           grep -q 'allow init sysfs_usb:file rw_file_perms;' sepolicy/init.te
           grep -q 'allow adbd functionfs:file rw_file_perms;' sepolicy/adbd.te
           grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
           test ! -e sepolicy/su.te
-          ! grep -q 'adb_device:chr_file' sepolicy/adbd.te
+          reject_grep 'legacy adb_device character-device rule remains' -q 'adb_device:chr_file' sepolicy/adbd.te
           grep -q 'allow recovery tmpfs:fifo_file create_file_perms;' sepolicy/recovery.te
           grep -q 'create_pty(recovery)' sepolicy/recovery.te
           grep -q 'set_prop(recovery, twrp_prop)' sepolicy/recovery.te
@@ -200,14 +228,14 @@ jobs:
           grep -q '^twrp\.' sepolicy/property_contexts
 
           test -f recovery/root/init.rc
-          ! grep -q '/sbin/permissive.sh' recovery/root/init.rc
-          ! grep -q 'init.recovery.vold_decrypt.rc' recovery/root/init.rc
-          ! grep -q 'on property:service.adb.root=1' recovery/root/init.rc
-          ! grep -q 'on property:ro.debuggable=1' recovery/root/init.rc
-          ! grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.rc
+          reject_grep 'obsolete permissive helper remains in init.rc' -q '/sbin/permissive.sh' recovery/root/init.rc
+          reject_grep 'absent vold decrypt rc is still imported' -q 'init.recovery.vold_decrypt.rc' recovery/root/init.rc
+          reject_grep 'legacy adb root restart trigger remains' -q 'on property:service.adb.root=1' recovery/root/init.rc
+          reject_grep 'generic debuggable trigger can still start adbd early' -q 'on property:ro.debuggable=1' recovery/root/init.rc
+          reject_grep 'generic init.rc can still enable android_usb' -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.rc
           grep -q 'service adbd /sbin/adbd --device_banner=recovery' recovery/root/init.rc
-          ! grep -q -- '--root_seclabel' recovery/root/init.rc
-          ! grep -q 'setenv LD_LIBRARY_PATH /system/lib64' recovery/root/init.rc
+          reject_grep 'adbd service still requests a root SELinux label' -Eq '^[[:space:]]*service[[:space:]]+adbd[[:space:]].*--root_seclabel(=|[[:space:]]|$)' recovery/root/init.rc
+          reject_grep 'Android 10 adbd library path remains' -q 'setenv LD_LIBRARY_PATH /system/lib64' recovery/root/init.rc
           grep -q 'setprop j720f.usb.native_prepare 1' recovery/root/init.rc
 
           test -L recovery/root/etc/fstab
@@ -251,10 +279,10 @@ jobs:
           grep -q 'NATIVE ANDROID 7.1 RECOVERY ADBD' recovery/root/sbin/j720f_runtime_diag.sh
           grep -q 'ADBD PROCESS / CONTEXT / FDS' recovery/root/sbin/j720f_runtime_diag.sh
           grep -q 'pidof adbd' recovery/root/sbin/j720f_runtime_diag.sh
-          ! grep -q '/sbin/twrp' recovery/root/sbin/j720f_runtime_diag.sh
-          ! grep -q 'mount -t' recovery/root/sbin/j720f_runtime_diag.sh
-          ! grep -q 'ctl.stop' recovery/root/sbin/j720f_runtime_diag.sh
-          ! grep -q 'ctl.start' recovery/root/sbin/j720f_runtime_diag.sh
+          reject_grep 'diagnostic script still searches for /sbin/twrp' -q '/sbin/twrp' recovery/root/sbin/j720f_runtime_diag.sh
+          reject_grep 'diagnostic script still performs a mount' -q 'mount -t' recovery/root/sbin/j720f_runtime_diag.sh
+          reject_grep 'diagnostic script still stops services' -q 'ctl.stop' recovery/root/sbin/j720f_runtime_diag.sh
+          reject_grep 'diagnostic script still starts services' -q 'ctl.start' recovery/root/sbin/j720f_runtime_diag.sh
 
       - name: Build source TWRP 3.3 in the proven donor environment
         shell: bash
@@ -275,6 +303,20 @@ jobs:
           set -eo pipefail
           set +u
           set -x
+          reject_grep() {
+            local label="$1"
+            shift
+            if grep "$@"; then
+              echo "Rejected: $label" >&2
+              exit 1
+            else
+              local status=$?
+              if [ "$status" -ne 1 ]; then
+                echo "grep failed while checking: $label" >&2
+                exit "$status"
+              fi
+            fi
+          }
           mkdir -p "$HOME"
           export ALLOW_MISSING_DEPENDENCIES=true
           source build/envsetup.sh
@@ -292,14 +334,14 @@ jobs:
           test -f "$RECOVERY_POLICY"
           test -f "$ROOT_POLICY"
           test -x "$ANALYZE"
-          ! grep -Eq '^[[:space:]]*permissive[[:space:]]+init;' "$POLICY_CONF"
+          reject_grep 'compiled policy makes init permissive' -Eq '^[[:space:]]*permissive[[:space:]]+init;' "$POLICY_CONF"
           grep -Fq 'type twrp_prop, property_type;' "$POLICY_CONF"
           grep -E '^(allow|dontaudit) (adbd|su) (functionfs|ffs_prop)' "$POLICY_CONF" \
             | tee "$OUT/sepolicy-adbd-usb-rules.txt"
           grep -q '^allow adbd functionfs:file {' "$POLICY_CONF"
           grep -q '^allow adbd ffs_prop:property_service set;' "$POLICY_CONF"
-          ! grep -q '^allow su functionfs:' "$POLICY_CONF"
-          ! grep -q '^allow su ffs_prop:property_service set;' "$POLICY_CONF"
+          reject_grep 'compiled policy still grants su FunctionFS access' -q '^allow su functionfs:' "$POLICY_CONF"
+          reject_grep 'compiled policy still lets su set ffs_prop' -q '^allow su ffs_prop:property_service set;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
           if grep -Eq '^init$' "$OUT/sepolicy-permissive-domains.txt"; then
@@ -321,8 +363,8 @@ jobs:
           test ! -e "$OUT/recovery/root/system/lib64/libadbd.so"
           grep -aFq '/tmp/orsin' "$OUT/recovery/root/sbin/recovery"
           grep -aFq '/tmp/orsout' "$OUT/recovery/root/sbin/recovery"
-          ! grep -aFq '/sbin/orsin' "$OUT/recovery/root/sbin/recovery"
-          ! grep -aFq '/sbin/orsout' "$OUT/recovery/root/sbin/recovery"
+          reject_grep 'recovery binary still embeds /sbin/orsin' -aFq '/sbin/orsin' "$OUT/recovery/root/sbin/recovery"
+          reject_grep 'recovery binary still embeds /sbin/orsout' -aFq '/sbin/orsout' "$OUT/recovery/root/sbin/recovery"
           BUILD_EOF
 
       - name: Finalize Samsung image and audit
