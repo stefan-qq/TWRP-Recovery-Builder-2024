@@ -1,4 +1,4 @@
-name: Build J720F TWRP 3.3 stock Android 10 FunctionFS ADB
+name: Build J720F TWRP 3.3 native Android 7.1 FunctionFS ADB
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-stock-ffs-adbd
+        default: twrp-3.3-native-ffs-adbd
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -157,9 +157,7 @@ jobs:
           test -x tools/finalize_samsung_recovery.py
           test -f prebuilt/kernel
           test -f prebuilt/dt.img
-          test -f prebuilt/recovery-J720F-CUL1.img.lz4
           test -f prebuilt/samsung-recovery-trailer.bin
-          test -x tools/extract_stock_adbd_bundle.py
 
           echo \
             'f91660e294f4532d266d23f386f99f4e9c290859154236d82e5280af9f11d268  prebuilt/kernel' \
@@ -167,23 +165,6 @@ jobs:
           echo \
             '25fd9f99fcb520b117475c812302afdfd53f8f36dbcda6a9416429b2401ddafb  prebuilt/dt.img' \
             | sha256sum -c -
-          echo \
-            '28af7ed6508da206f5c649e8ad9afdd65043bb5241826d8135f2b26b2eabe24c  prebuilt/recovery-J720F-CUL1.img.lz4' \
-            | sha256sum -c -
-
-          python3 tools/extract_stock_adbd_bundle.py \
-            prebuilt/recovery-J720F-CUL1.img.lz4 recovery/root
-          test -x recovery/root/system/bin/adbd
-          test -x recovery/root/system/bin/linker64
-          test -x recovery/root/system/bin/sh
-          test -f recovery/root/system/etc/ld.config.txt
-          test -f recovery/root/system/etc/j720f-stock-adbd-bundle.txt
-          grep -Fq 'source=J720F CUL1 stock recovery' \
-            recovery/root/system/etc/j720f-stock-adbd-bundle.txt
-          echo \
-            'e5a1dff495b94d469ec4cfcda60efbc2a674c769acbf7c6447f5e994542ee84a  recovery/root/system/bin/adbd' \
-            | sha256sum -c -
-
           grep -Fq 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
           grep -Fq 'TW_INCLUDE_CRYPTO := true' BoardConfig.mk
           grep -Fq 'TW_EXCLUDE_MTP := true' BoardConfig.mk
@@ -223,9 +204,9 @@ jobs:
           ! grep -q 'on property:service.adb.root=1' recovery/root/init.rc
           ! grep -q 'on property:ro.debuggable=1' recovery/root/init.rc
           ! grep -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.rc
-          grep -q 'service adbd /system/bin/adbd' recovery/root/init.rc
-          grep -q 'setenv LD_LIBRARY_PATH /system/lib64' recovery/root/init.rc
-          grep -q 'setprop j720f.usb.stock_ffs_prepare_action 1' recovery/root/init.rc
+          grep -q 'service adbd /sbin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery' recovery/root/init.rc
+          ! grep -q 'setenv LD_LIBRARY_PATH /system/lib64' recovery/root/init.rc
+          grep -q 'setprop j720f.usb.native_prepare 1' recovery/root/init.rc
 
           test -L recovery/root/etc/fstab
           test "$(readlink recovery/root/etc/fstab)" = /tmp/fstab
@@ -240,7 +221,7 @@ jobs:
           grep -q '/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb' recovery/root/init.recovery.usb.rc
           grep -q 'on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
           grep -q 'write /sys/kernel/config/usb_gadget/g1/UDC ${sys.usb.controller}' recovery/root/init.recovery.usb.rc
-          grep -q 'setprop j720f.usb.transport stock-android10-ffs' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.transport native-android71-ffs' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.udc_bind_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
@@ -263,7 +244,7 @@ jobs:
           grep -q 'seclabel u:r:recovery:s0' recovery/root/init.recovery.usb.rc
           grep -q 'start j7diag' recovery/root/init.recovery.usb.rc
           grep -q 'J720F_RUNTIME_DIAGNOSTICS.txt' recovery/root/sbin/j720f_runtime_diag.sh
-          grep -q 'STOCK ANDROID 10 ADBD BUNDLE' recovery/root/sbin/j720f_runtime_diag.sh
+          grep -q 'NATIVE ANDROID 7.1 RECOVERY ADBD' recovery/root/sbin/j720f_runtime_diag.sh
           ! grep -q '/sbin/twrp' recovery/root/sbin/j720f_runtime_diag.sh
           ! grep -q 'mount -t' recovery/root/sbin/j720f_runtime_diag.sh
           ! grep -q 'ctl.stop' recovery/root/sbin/j720f_runtime_diag.sh
@@ -320,17 +301,14 @@ jobs:
             echo 'Disproven forced-permissive init patch remains' >&2
             exit 1
           fi
-          test -x "$OUT/recovery/root/system/bin/adbd"
-          test -x "$OUT/recovery/root/system/bin/linker64"
-          test -x "$OUT/recovery/root/system/bin/sh"
-          test -f "$OUT/recovery/root/system/etc/j720f-stock-adbd-bundle.txt"
-          grep -Fq 'source=J720F CUL1 stock recovery' \
-            "$OUT/recovery/root/system/etc/j720f-stock-adbd-bundle.txt"
-          echo \
-            'e5a1dff495b94d469ec4cfcda60efbc2a674c769acbf7c6447f5e994542ee84a  '"$OUT"'/recovery/root/system/bin/adbd' \
-            | sha256sum -c -
-          grep -aFq '/dev/usb-ffs/adb/ep0' "$OUT/recovery/root/system/bin/adbd"
-          grep -aFq 'sys.usb.ffs.ready' "$OUT/recovery/root/system/lib64/libadbd.so"
+          test -x "$OUT/recovery/root/sbin/adbd"
+          grep -aFq '/dev/usb-ffs/adb/ep0' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq '/dev/usb-ffs/adb/ep1' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq '/dev/usb-ffs/adb/ep2' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'sys.usb.ffs.ready' "$OUT/recovery/root/sbin/adbd"
+          test ! -e "$OUT/recovery/root/system/bin/adbd"
+          test ! -e "$OUT/recovery/root/system/bin/linker64"
+          test ! -e "$OUT/recovery/root/system/lib64/libadbd.so"
           grep -aFq '/tmp/orsin' "$OUT/recovery/root/sbin/recovery"
           grep -aFq '/tmp/orsout' "$OUT/recovery/root/sbin/recovery"
           ! grep -aFq '/sbin/orsin' "$OUT/recovery/root/sbin/recovery"
@@ -365,7 +343,7 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with working terminal and pinned CUL1 Android 10 FunctionFS adbd transport'
+            echo 'base=v11 UI/touch with working terminal and native Android 7.1 FunctionFS adbd transport'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -383,7 +361,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-stock-ffs-adbd-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-native-ffs-adbd-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -401,7 +379,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-stock-ffs-adbd-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-native-ffs-adbd-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
@@ -409,6 +387,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 stock Android 10 FunctionFS ADB ${{ github.run_id }}" \
-            --notes "This build keeps the proven Android 7.1 TWRP UI, terminal, microSD, FIFO and PTY fixes, abandons the DWC3-rejected direct adb.0 route, and uses the exact pinned CUL1 stock-recovery Android 10 adbd/linker/library bundle with FunctionFS. Only adbd is permissive for bring-up; init remains enforcing. MTP remains isolated, and encrypted userdata is not formatted." \
+            --title "J720F TWRP 3.3 native Android 7.1 FunctionFS ADB ${{ github.run_id }}" \
+            --notes "This build keeps one coherent Android 7.1 recovery userspace for init, TWRP, bionic, properties and adbd, while retaining the exact CUL1 stock kernel/DT and Samsung FunctionFS ConfigFS gadget sequence. It removes the incompatible Android 10 adbd/linker/library experiment. Only adbd is permissive for bring-up; init remains enforcing. MTP remains isolated, and encrypted userdata is not formatted." \
             --prerelease
