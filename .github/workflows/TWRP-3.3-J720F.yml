@@ -1,4 +1,4 @@
-name: Build J720F TWRP 3.3 native FunctionFS ADB in adbd domain
+name: Build J720F TWRP 3.3 direct FunctionFS trace
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-native-ffs-adbd-domain
+        default: twrp-3.3-native-ffs-direct-trace
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -146,6 +146,54 @@ jobs:
           reject_grep 'legacy /sbin ORS input path remains' -Fq '"/sbin/orsin"' "$ORS_HEADER"
           reject_grep 'legacy /sbin ORS output path remains' -Fq '"/sbin/orsout"' "$ORS_HEADER"
 
+      - name: Instrument native adbd for direct FunctionFS tracing
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TRACE_DIR=workspace/j720f-build-diagnostics
+          SYSTEM_CORE=workspace/system/core
+          mkdir -p "$TRACE_DIR"
+
+          SYSTEM_CORE_COMMIT="$(git -C "$SYSTEM_CORE" rev-parse HEAD)"
+          SYSTEM_CORE_REMOTE_NAME="$(git -C "$SYSTEM_CORE" remote | head -n 1)"
+          test -n "$SYSTEM_CORE_REMOTE_NAME"
+          SYSTEM_CORE_REPOSITORY="$(git -C "$SYSTEM_CORE" remote get-url "$SYSTEM_CORE_REMOTE_NAME")"
+          echo "SYSTEM_CORE_COMMIT=$SYSTEM_CORE_COMMIT" >> "$GITHUB_ENV"
+          echo "SYSTEM_CORE_REPOSITORY=$SYSTEM_CORE_REPOSITORY" >> "$GITHUB_ENV"
+
+          python3 tools/patch_j720f_adbd_usb_trace.py \
+            --system-core "$SYSTEM_CORE" \
+            --report "$TRACE_DIR/adbd-trace-patch-report.json"
+
+          git -C "$SYSTEM_CORE" diff --check
+          git -C "$SYSTEM_CORE" diff -- \
+            adb/usb_linux_client.cpp \
+            adb/adb_trace.cpp \
+            > "$TRACE_DIR/system-core-adbd-direct-trace.patch"
+          test -s "$TRACE_DIR/system-core-adbd-direct-trace.patch"
+
+          cp "$SYSTEM_CORE/adb/usb_linux_client.cpp" \
+            "$TRACE_DIR/usb_linux_client.cpp.patched"
+          cp "$SYSTEM_CORE/adb/adb_trace.cpp" \
+            "$TRACE_DIR/adb_trace.cpp.patched"
+          printf '%s\n' "$SYSTEM_CORE_COMMIT" \
+            > "$TRACE_DIR/system-core-commit.txt"
+          printf '%s\n' "$SYSTEM_CORE_REPOSITORY" \
+            > "$TRACE_DIR/system-core-repository.txt"
+
+          grep -Fq '/tmp/J720F_ADBD_USB_TRACE.txt' \
+            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
+          grep -Fq 'event=v2_descriptor_write' \
+            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
+          grep -Fq 'event=ffs_ready_property_set' \
+            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
+          grep -Fq '/tmp/J720F_ADBD_TRACE.txt' \
+            "$SYSTEM_CORE/adb/adb_trace.cpp"
+          if grep -Fq '/data/adb/adb-' "$SYSTEM_CORE/adb/adb_trace.cpp"; then
+            echo 'Old /data ADB trace path remains after instrumentation' >&2
+            exit 1
+          fi
+
       - name: Install the donor clang revision
         shell: bash
         run: |
@@ -217,6 +265,8 @@ jobs:
           grep -q 'allow init sysfs_usb:file rw_file_perms;' sepolicy/init.te
           grep -q 'allow adbd functionfs:file rw_file_perms;' sepolicy/adbd.te
           grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
+          grep -q 'allow adbd tmpfs:dir rw_dir_perms;' sepolicy/adbd.te
+          grep -q 'allow adbd tmpfs:file create_file_perms;' sepolicy/adbd.te
           test ! -e sepolicy/su.te
           reject_grep 'legacy adb_device character-device rule remains' -q 'adb_device:chr_file' sepolicy/adbd.te
           grep -q 'allow recovery tmpfs:fifo_file create_file_perms;' sepolicy/recovery.te
@@ -241,6 +291,7 @@ jobs:
           test -L recovery/root/etc/fstab
           test "$(readlink recovery/root/etc/fstab)" = /tmp/fstab
           test -x recovery/root/sbin/j720f_runtime_diag.sh
+          test -x recovery/root/sbin/j720f_collect_direct_usb_trace.sh
           test ! -e recovery/root/sbin/postrecoveryboot.sh
           test ! -e recovery/root/sbin/j720f_rc231_diag.sh
           test ! -e recovery/root/sbin/j720f_usb_report.sh
@@ -253,6 +304,10 @@ jobs:
           grep -q 'write /sys/kernel/config/usb_gadget/g1/UDC ${sys.usb.controller}' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.transport native-android71-ffs' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.adbd_domain_only 1' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.direct_trace 1' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop persist.adb.trace_mask all' recovery/root/init.recovery.usb.rc
+          grep -q 'write /tmp/J720F_ADBD_USB_TRACE.txt J720F_USB_DIAG_INIT_PRECREATED' recovery/root/init.recovery.usb.rc
+          grep -q 'write /tmp/J720F_ADBD_TRACE.txt J720F_ADBD_TRACE_INIT_PRECREATED' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.udc_bind_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
@@ -279,10 +334,19 @@ jobs:
           grep -q 'NATIVE ANDROID 7.1 RECOVERY ADBD' recovery/root/sbin/j720f_runtime_diag.sh
           grep -q 'ADBD PROCESS / CONTEXT / FDS' recovery/root/sbin/j720f_runtime_diag.sh
           grep -q 'pidof adbd' recovery/root/sbin/j720f_runtime_diag.sh
+          grep -q 'DIRECT ADBD FUNCTIONFS SYSCALL TRACE' recovery/root/sbin/j720f_runtime_diag.sh
+          grep -q '/tmp/J720F_ADBD_USB_TRACE.txt' recovery/root/sbin/j720f_runtime_diag.sh
+          grep -q '/tmp/J720F_ADBD_TRACE.txt' recovery/root/sbin/j720f_runtime_diag.sh
+          grep -q 'j720f_collect_direct_usb_trace.sh auto' recovery/root/sbin/j720f_runtime_diag.sh
+          grep -q 'J720F_DIRECT_USB_TRACE' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
+          grep -q 'trace_metadata.txt' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
           reject_grep 'diagnostic script still searches for /sbin/twrp' -q '/sbin/twrp' recovery/root/sbin/j720f_runtime_diag.sh
           reject_grep 'diagnostic script still performs a mount' -q 'mount -t' recovery/root/sbin/j720f_runtime_diag.sh
           reject_grep 'diagnostic script still stops services' -q 'ctl.stop' recovery/root/sbin/j720f_runtime_diag.sh
           reject_grep 'diagnostic script still starts services' -q 'ctl.start' recovery/root/sbin/j720f_runtime_diag.sh
+          reject_grep 'collector performs a mount' -q 'mount -t' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
+          reject_grep 'collector stops services' -q 'ctl.stop' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
+          reject_grep 'collector starts services' -q 'ctl.start' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
 
       - name: Build source TWRP 3.3 in the proven donor environment
         shell: bash
@@ -336,10 +400,12 @@ jobs:
           test -x "$ANALYZE"
           reject_grep 'compiled policy makes init permissive' -Eq '^[[:space:]]*permissive[[:space:]]+init;' "$POLICY_CONF"
           grep -Fq 'type twrp_prop, property_type;' "$POLICY_CONF"
-          grep -E '^(allow|dontaudit) (adbd|su) (functionfs|ffs_prop)' "$POLICY_CONF" \
+          grep -E '^(allow|dontaudit) (adbd|su) (functionfs|ffs_prop|tmpfs)' "$POLICY_CONF" \
             | tee "$OUT/sepolicy-adbd-usb-rules.txt"
           grep -q '^allow adbd functionfs:file {' "$POLICY_CONF"
           grep -q '^allow adbd ffs_prop:property_service set;' "$POLICY_CONF"
+          grep -q '^allow adbd tmpfs:dir ' "$POLICY_CONF"
+          grep -q '^allow adbd tmpfs:file ' "$POLICY_CONF"
           reject_grep 'compiled policy still grants su FunctionFS access' -q '^allow su functionfs:' "$POLICY_CONF"
           reject_grep 'compiled policy still lets su set ffs_prop' -q '^allow su ffs_prop:property_service set;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
@@ -358,6 +424,12 @@ jobs:
           grep -aFq '/dev/usb-ffs/adb/ep1' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/dev/usb-ffs/adb/ep2' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'sys.usb.ffs.ready' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq '/tmp/J720F_ADBD_USB_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_USB_DIAG' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'event=v2_descriptor_write' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
+          reject_grep 'instrumented adbd still embeds /data ADB trace path' -aFq '/data/adb/adb-' "$OUT/recovery/root/sbin/adbd"
           test ! -e "$OUT/recovery/root/system/bin/adbd"
           test ! -e "$OUT/recovery/root/system/bin/linker64"
           test ! -e "$OUT/recovery/root/system/lib64/libadbd.so"
@@ -384,6 +456,8 @@ jobs:
             "$OUT/recovery-audit/sepolicy-permissive-domains.txt"
           cp "$OUT/sepolicy-adbd-usb-rules.txt" \
             "$OUT/recovery-audit/sepolicy-adbd-usb-rules.txt"
+          cp workspace/j720f-build-diagnostics/* \
+            "$OUT/recovery-audit/"
           test "$(stat -c %s "$IMAGE")" -le "$RECOVERY_LIMIT"
 
       - name: Package Heimdall/Odin tar and metadata
@@ -397,10 +471,13 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with native Android 7.1 FunctionFS adbd kept in u:r:adbd:s0'
+            echo 'base=v11 UI/touch with direct native Android 7.1 FunctionFS syscall tracing'
+            echo 'diagnostic=instrumented adbd writes direct syscall and native ADB traces to recovery tmpfs'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
+            echo "system_core_repository=$SYSTEM_CORE_REPOSITORY"
+            echo "system_core_commit=$SYSTEM_CORE_COMMIT"
             echo "device_tree=${{ inputs.DEVICE_TREE }}"
             echo "device_tree_branch=${{ inputs.DEVICE_TREE_BRANCH }}"
             echo "device_tree_commit=$DEVICE_TREE_COMMIT"
@@ -415,7 +492,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-native-ffs-adbd-domain-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-native-ffs-direct-trace-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -433,7 +510,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-native-ffs-adbd-domain-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-native-ffs-direct-trace-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
@@ -441,6 +518,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 native adbd-domain diagnostic ${{ github.run_id }}" \
-            --notes "Diagnostic build: native Android 7.1 adbd stays UID 0 in u:r:adbd:s0 without --root_seclabel. The exact CUL1 kernel/DT and Samsung FunctionFS ConfigFS sequence are retained; readproc diagnostics capture the adbd process state. MTP remains excluded, and the image never formats userdata automatically. Not a stable community release." \
+            --title "J720F TWRP 3.3 direct FunctionFS trace ${{ github.run_id }}" \
+            --notes "Diagnostic build: native Android 7.1 adbd is source-instrumented to record every FunctionFS open/write/result/errno checkpoint and its native ADB trace under /tmp, independent of /data and host USB. Exact CUL1 kernel/DT and Samsung ConfigFS sequence are retained. MTP remains excluded. Not a stable community release." \
             --prerelease
