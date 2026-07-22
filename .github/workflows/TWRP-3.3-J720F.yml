@@ -480,7 +480,11 @@ jobs:
             | tee "$OUT/sepolicy-j720f-data-trace-rules.txt"
           grep -q '^allow adbd functionfs:file {' "$POLICY_CONF"
           grep -q '^allow adbd ffs_prop:property_service set;' "$POLICY_CONF"
-          reject_grep 'compiled policy grants generic adbd tmpfs access' -q '^allow adbd tmpfs:' "$POLICY_CONF"
+          if grep -E '^allow adbd tmpfs:.*[[:space:]{}](create|write|append|setattr|unlink|rename|add_name|remove_name|reparent|rmdir|relabelfrom|relabelto|execute|execute_no_trans|entrypoint|mounton)([[:space:]{};]|$)' "$POLICY_CONF"; then
+            echo 'Rejected: compiled policy grants generic adbd tmpfs write or execute access' >&2
+            exit 1
+          fi
+          echo 'Verified: adbd has no generic tmpfs write or execute access'
           grep -q '^allow adbd j720f_adbd_trace_file:file ' "$POLICY_CONF"
           grep -q '^allow recovery j720f_adbd_trace_file:file ' "$POLICY_CONF"
           grep -q '^allow recovery system_data_file:dir ' "$POLICY_CONF"
