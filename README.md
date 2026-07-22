@@ -26,3 +26,10 @@ markers in the final ramdisk binary, and packages all build-side evidence in
 `recovery-audit/`. The phone copies the runtime traces automatically to
 `/external_sd/J720F_DIRECT_USB_TRACE/`; a one-line manual collector is also
 included. MTP remains excluded until ADB is proven.
+
+## Trace-readable data diagnostic branch
+
+`twrp-3.3-native-ffs-trace-readable-data` patches only the recovery-policy
+copy in the build tree, gives TWRP targeted `/data` access, and labels the
+adbd trace files so the recovery collector can read them. It is not a release
+branch until USB, ADB, MTP, backup and restore pass hardware testing.

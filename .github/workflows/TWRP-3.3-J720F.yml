@@ -1,4 +1,4 @@
-name: Build J720F TWRP 3.3 direct FunctionFS trace
+name: Build J720F TWRP 3.3 trace-readable data diagnostic
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-native-ffs-direct-trace
+        default: twrp-3.3-native-ffs-trace-readable-data
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -194,6 +194,30 @@ jobs:
             exit 1
           fi
 
+      - name: Patch donor recovery policy for targeted TWRP data access
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TRACE_DIR=workspace/j720f-build-diagnostics
+          SEPOLICY=workspace/system/sepolicy
+
+          python3 tools/patch_j720f_recovery_data_policy.py \
+            --sepolicy "$SEPOLICY" \
+            --report "$TRACE_DIR/recovery-data-policy-patch-report.json"
+
+          git -C "$SEPOLICY" diff --check
+          git -C "$SEPOLICY" diff -- \
+            recovery.te domain.te \
+            > "$TRACE_DIR/system-sepolicy-j720f-data.patch"
+          test -s "$TRACE_DIR/system-sepolicy-j720f-data.patch"
+
+          if grep -q '^neverallow recovery data_file_type:' "$SEPOLICY/recovery.te"; then
+            echo 'Recovery /data neverallow remains after patch' >&2
+            exit 1
+          fi
+          grep -A12 -B2 'system_data_file:file no_w_file_perms' \
+            "$SEPOLICY/domain.te" | grep -q -- '-recovery'
+
       - name: Install the donor clang revision
         shell: bash
         run: |
@@ -265,8 +289,16 @@ jobs:
           grep -q 'allow init sysfs_usb:file rw_file_perms;' sepolicy/init.te
           grep -q 'allow adbd functionfs:file rw_file_perms;' sepolicy/adbd.te
           grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
-          grep -q 'allow adbd tmpfs:dir rw_dir_perms;' sepolicy/adbd.te
-          grep -q 'allow adbd tmpfs:file create_file_perms;' sepolicy/adbd.te
+          reject_grep 'adbd still has generic tmpfs write access' -q 'allow adbd tmpfs:' sepolicy/adbd.te
+          grep -q 'type j720f_adbd_trace_file, file_type;' sepolicy/j720f_trace.te
+          grep -q 'allow adbd j720f_adbd_trace_file:file create_file_perms;' sepolicy/j720f_trace.te
+          grep -q 'allow recovery j720f_adbd_trace_file:file r_file_perms;' sepolicy/j720f_trace.te
+          grep -q '/tmp/J720F_ADBD_USB_TRACE\.txt' sepolicy/file_contexts
+          grep -q '/tmp/J720F_ADBD_TRACE\.txt' sepolicy/file_contexts
+          grep -q 'allow recovery system_data_file:dir create_dir_perms;' sepolicy/recovery.te
+          grep -q 'allow recovery system_data_file:file create_file_perms;' sepolicy/recovery.te
+          grep -q 'allow recovery media_rw_data_file:dir create_dir_perms;' sepolicy/recovery.te
+          grep -q 'allow recovery media_rw_data_file:file create_file_perms;' sepolicy/recovery.te
           test ! -e sepolicy/su.te
           reject_grep 'legacy adb_device character-device rule remains' -q 'adb_device:chr_file' sepolicy/adbd.te
           grep -q 'allow recovery tmpfs:fifo_file create_file_perms;' sepolicy/recovery.te
@@ -307,7 +339,10 @@ jobs:
           grep -q 'setprop j720f.usb.direct_trace 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop persist.adb.trace_mask all' recovery/root/init.recovery.usb.rc
           grep -q 'write /tmp/J720F_ADBD_USB_TRACE.txt J720F_USB_DIAG_INIT_PRECREATED' recovery/root/init.recovery.usb.rc
+          grep -q 'restorecon /tmp/J720F_ADBD_USB_TRACE.txt' recovery/root/init.recovery.usb.rc
           grep -q 'write /tmp/J720F_ADBD_TRACE.txt J720F_ADBD_TRACE_INIT_PRECREATED' recovery/root/init.recovery.usb.rc
+          grep -q 'restorecon /tmp/J720F_ADBD_TRACE.txt' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.trace_precreated 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.udc_bind_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
@@ -340,6 +375,7 @@ jobs:
           grep -q 'j720f_collect_direct_usb_trace.sh auto' recovery/root/sbin/j720f_runtime_diag.sh
           grep -q 'J720F_DIRECT_USB_TRACE' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
           grep -q 'trace_metadata.txt' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
+          grep -q 'data_access.txt' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
           reject_grep 'diagnostic script still searches for /sbin/twrp' -q '/sbin/twrp' recovery/root/sbin/j720f_runtime_diag.sh
           reject_grep 'diagnostic script still performs a mount' -q 'mount -t' recovery/root/sbin/j720f_runtime_diag.sh
           reject_grep 'diagnostic script still stops services' -q 'ctl.stop' recovery/root/sbin/j720f_runtime_diag.sh
@@ -400,12 +436,20 @@ jobs:
           test -x "$ANALYZE"
           reject_grep 'compiled policy makes init permissive' -Eq '^[[:space:]]*permissive[[:space:]]+init;' "$POLICY_CONF"
           grep -Fq 'type twrp_prop, property_type;' "$POLICY_CONF"
-          grep -E '^(allow|dontaudit) (adbd|su) (functionfs|ffs_prop|tmpfs)' "$POLICY_CONF" \
+          grep -E '^(allow|dontaudit) (adbd|su) (functionfs|ffs_prop|tmpfs|j720f_adbd_trace_file)' "$POLICY_CONF" \
             | tee "$OUT/sepolicy-adbd-usb-rules.txt"
+          grep -E '^allow (init|adbd|recovery) (j720f_adbd_trace_file|system_data_file|media_rw_data_file)' "$POLICY_CONF" \
+            | tee "$OUT/sepolicy-j720f-data-trace-rules.txt"
           grep -q '^allow adbd functionfs:file {' "$POLICY_CONF"
           grep -q '^allow adbd ffs_prop:property_service set;' "$POLICY_CONF"
-          grep -q '^allow adbd tmpfs:dir ' "$POLICY_CONF"
-          grep -q '^allow adbd tmpfs:file ' "$POLICY_CONF"
+          reject_grep 'compiled policy grants generic adbd tmpfs access' -q '^allow adbd tmpfs:' "$POLICY_CONF"
+          grep -q '^allow adbd j720f_adbd_trace_file:file ' "$POLICY_CONF"
+          grep -q '^allow recovery j720f_adbd_trace_file:file ' "$POLICY_CONF"
+          grep -q '^allow recovery system_data_file:dir ' "$POLICY_CONF"
+          grep -q '^allow recovery system_data_file:file ' "$POLICY_CONF"
+          grep -q '^allow recovery media_rw_data_file:dir ' "$POLICY_CONF"
+          grep -q '^allow recovery media_rw_data_file:file ' "$POLICY_CONF"
+          reject_grep 'compiled recovery data neverallow remains' -q '^neverallow recovery data_file_type:' "$POLICY_CONF"
           reject_grep 'compiled policy still grants su FunctionFS access' -q '^allow su functionfs:' "$POLICY_CONF"
           reject_grep 'compiled policy still lets su set ffs_prop' -q '^allow su ffs_prop:property_service set;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
@@ -456,6 +500,8 @@ jobs:
             "$OUT/recovery-audit/sepolicy-permissive-domains.txt"
           cp "$OUT/sepolicy-adbd-usb-rules.txt" \
             "$OUT/recovery-audit/sepolicy-adbd-usb-rules.txt"
+          cp "$OUT/sepolicy-j720f-data-trace-rules.txt" \
+            "$OUT/recovery-audit/sepolicy-j720f-data-trace-rules.txt"
           cp workspace/j720f-build-diagnostics/* \
             "$OUT/recovery-audit/"
           test "$(stat -c %s "$IMAGE")" -le "$RECOVERY_LIMIT"
@@ -471,8 +517,8 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with direct native Android 7.1 FunctionFS syscall tracing'
-            echo 'diagnostic=instrumented adbd writes direct syscall and native ADB traces to recovery tmpfs'
+            echo 'base=v11 UI/touch with readable direct FunctionFS tracing and targeted TWRP data access'
+            echo 'diagnostic=custom-labeled tmpfs traces plus targeted system_data_file/media_rw_data_file recovery policy'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -492,7 +538,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-native-ffs-direct-trace-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-native-ffs-trace-readable-data-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -510,7 +556,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-native-ffs-direct-trace-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-native-ffs-trace-readable-data-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
@@ -518,6 +564,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 direct FunctionFS trace ${{ github.run_id }}" \
-            --notes "Diagnostic build: native Android 7.1 adbd is source-instrumented to record every FunctionFS open/write/result/errno checkpoint and its native ADB trace under /tmp, independent of /data and host USB. Exact CUL1 kernel/DT and Samsung ConfigFS sequence are retained. MTP remains excluded. Not a stable community release." \
+            --title "J720F TWRP 3.3 trace-readable data diagnostic ${{ github.run_id }}" \
+            --notes "Diagnostic build: adbd direct/native traces use a dedicated SELinux file type readable by TWRP, while recovery receives targeted access to freshly formatted system_data_file and media_rw_data_file content. Exact CUL1 kernel/DT and Samsung ConfigFS sequence are retained. MTP remains excluded. Not a stable community release." \
             --prerelease
