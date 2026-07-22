@@ -215,8 +215,46 @@ jobs:
             echo 'Recovery /data neverallow remains after patch' >&2
             exit 1
           fi
-          grep -A12 -B2 'system_data_file:file no_w_file_perms' \
-            "$SEPOLICY/domain.te" | grep -q -- '-recovery'
+          python3 - "$SEPOLICY/domain.te" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          lines = path.read_text().splitlines()
+          end = next(
+              (
+                  index
+                  for index, line in enumerate(lines)
+                  if line.strip()
+                  == "} system_data_file:file no_w_file_perms;"
+              ),
+              None,
+          )
+          if end is None:
+              raise SystemExit(
+                  "system_data_file write neverallow not found"
+              )
+
+          start = end
+          while start >= 0 and lines[start].strip() != "neverallow {":
+              start -= 1
+          if start < 0:
+              raise SystemExit(
+                  "start of system_data_file neverallow not found"
+              )
+
+          block = lines[start : end + 1]
+          if not any(line.strip() == "-recovery" for line in block):
+              raise SystemExit(
+                  "recovery exemption missing from system_data_file "
+                  "write neverallow"
+              )
+
+          print(
+              "Verified recovery exemption in system_data_file "
+              "write neverallow"
+          )
+          PY
 
       - name: Install the donor clang revision
         shell: bash
