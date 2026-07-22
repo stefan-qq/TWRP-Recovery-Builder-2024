@@ -331,8 +331,8 @@ jobs:
           grep -q 'type j720f_adbd_trace_file, file_type;' sepolicy/j720f_trace.te
           grep -q 'allow adbd j720f_adbd_trace_file:file create_file_perms;' sepolicy/j720f_trace.te
           grep -q 'allow recovery j720f_adbd_trace_file:file r_file_perms;' sepolicy/j720f_trace.te
-          grep -q '/tmp/J720F_ADBD_USB_TRACE\.txt' sepolicy/file_contexts
-          grep -q '/tmp/J720F_ADBD_TRACE\.txt' sepolicy/file_contexts
+          grep -Fq '/tmp/J720F_ADBD_USB_TRACE\.txt' sepolicy/file_contexts
+          grep -Fq '/tmp/J720F_ADBD_TRACE\.txt' sepolicy/file_contexts
           grep -q 'allow recovery system_data_file:dir create_dir_perms;' sepolicy/recovery.te
           grep -q 'allow recovery system_data_file:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery media_rw_data_file:dir create_dir_perms;' sepolicy/recovery.te
