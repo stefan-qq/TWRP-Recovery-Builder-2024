@@ -33,8 +33,14 @@ def patch_main(text: str) -> str:
     pattern = re.compile(
         r"(?ms)"
         r"^[ \t]*bool[ \t]+is_usb[ \t]*=[ \t]*false;[ \t]*\n"
-        r"[ \t]*\n"
-        r"^[ \t]*#if[ \t]+defined\(__ANDROID__\)[ \t]*\n"
+        # The pinned source places the if immediately after this line;
+        # related trees may contain one or more blank lines.
+        r"(?:[ \t]*\n)*"
+        # The pinned Omni Android 7.1 source has this gate without an
+        # __ANDROID__ preprocessor wrapper. Some closely related AOSP trees
+        # wrap the same block, so accept either form while still requiring the
+        # exact one-shot USB gate body below.
+        r"(?:^[ \t]*#if[ \t]+defined\(__ANDROID__\)[ \t]*\n)?"
         r"^[ \t]*if[ \t]*\("
         r"(?:access\(USB_ADB_PATH,[ \t]*F_OK\)[ \t]*==[ \t]*0[ \t]*\|\|[ \t]*)?"
         r"access\(USB_FFS_ADB_EP0,[ \t]*F_OK\)[ \t]*==[ \t]*0"
@@ -43,7 +49,7 @@ def patch_main(text: str) -> str:
         r"^[ \t]*usb_init\(\);[ \t]*\n"
         r"^[ \t]*is_usb[ \t]*=[ \t]*true;[ \t]*\n"
         r"^[ \t]*\}[ \t]*\n"
-        r"^[ \t]*#endif"
+        r"(?:^[ \t]*#endif[ \t]*(?:\n|$))?"
     )
 
     replacement = '''    bool is_usb = false;
@@ -76,7 +82,8 @@ def patch_main(text: str) -> str:
         D("J720F_MAIN_USB_DECISION mode=tcp-fallback force=%d access=%d errno=%d",
           j720f_force_ffs, j720f_ep0_access, j720f_ep0_errno);
     }
-#endif'''
+#endif
+'''
 
     updated, count = pattern.subn(replacement, text, count=1)
     if count != 1:
