@@ -33,3 +33,13 @@ included. MTP remains excluded until ADB is proven.
 copy in the build tree, gives TWRP targeted `/data` access, and labels the
 adbd trace files so the recovery collector can read them. It is not a release
 branch until USB, ADB, MTP, backup and restore pass hardware testing.
+
+## Forced FunctionFS-entry branch
+
+`twrp-3.3-native-ffs-force-ffs-entry` is based on the first successful readable
+trace. adbd entered its event loop and opened the default TCP 5555 transport,
+but no `usb_init()` or FunctionFS trace event occurred. The build therefore
+instruments `adb/daemon/main.cpp`, bypasses its one-shot ep0 preflight when the
+J720F recovery transport marker is present, and forces `usb_init()` to choose
+FunctionFS. The existing open thread continues retrying and records exact ep0,
+descriptor, endpoint and property results.

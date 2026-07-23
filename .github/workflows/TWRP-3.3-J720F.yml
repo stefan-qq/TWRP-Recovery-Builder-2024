@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-native-ffs-trace-readable-data
+        default: twrp-3.3-native-ffs-force-ffs-entry
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -164,14 +164,20 @@ jobs:
           python3 tools/patch_j720f_adbd_usb_trace.py \
             --system-core "$SYSTEM_CORE" \
             --report "$TRACE_DIR/adbd-trace-patch-report.json"
+          python3 tools/patch_j720f_adbd_force_ffs.py \
+            --system-core "$SYSTEM_CORE" \
+            --report "$TRACE_DIR/adbd-force-ffs-patch-report.json"
 
           git -C "$SYSTEM_CORE" diff --check
           git -C "$SYSTEM_CORE" diff -- \
+            adb/daemon/main.cpp \
             adb/usb_linux_client.cpp \
             adb/adb_trace.cpp \
             > "$TRACE_DIR/system-core-adbd-direct-trace.patch"
           test -s "$TRACE_DIR/system-core-adbd-direct-trace.patch"
 
+          cp "$SYSTEM_CORE/adb/daemon/main.cpp" \
+            "$TRACE_DIR/adbd-main.cpp.patched"
           cp "$SYSTEM_CORE/adb/usb_linux_client.cpp" \
             "$TRACE_DIR/usb_linux_client.cpp.patched"
           cp "$SYSTEM_CORE/adb/adb_trace.cpp" \
@@ -181,7 +187,15 @@ jobs:
           printf '%s\n' "$SYSTEM_CORE_REPOSITORY" \
             > "$TRACE_DIR/system-core-repository.txt"
 
+          grep -Fq 'J720F_MAIN_USB_GATE' \
+            "$SYSTEM_CORE/adb/daemon/main.cpp"
+          grep -Fq 'J720F_MAIN_USB_DECISION' \
+            "$SYSTEM_CORE/adb/daemon/main.cpp"
           grep -Fq '/tmp/J720F_ADBD_USB_TRACE.txt' \
+            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
+          grep -Fq 'event=usb_init_transport' \
+            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
+          grep -Fq 'event=usb_init_choice' \
             "$SYSTEM_CORE/adb/usb_linux_client.cpp"
           grep -Fq 'event=v2_descriptor_write' \
             "$SYSTEM_CORE/adb/usb_linux_client.cpp"
@@ -512,6 +526,10 @@ jobs:
           grep -aFq 'sys.usb.ffs.ready' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_USB_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_USB_DIAG' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_MAIN_USB_GATE' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_MAIN_USB_DECISION' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'event=usb_init_transport' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'event=usb_init_choice' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'event=v2_descriptor_write' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
@@ -559,8 +577,8 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with readable direct FunctionFS tracing and targeted TWRP data access'
-            echo 'diagnostic=custom-labeled tmpfs traces plus targeted system_data_file/media_rw_data_file recovery policy'
+            echo 'base=v11 UI/touch with forced FunctionFS entry, readable tracing and targeted TWRP data access'
+            echo 'diagnostic=forced adbd main/usb FunctionFS path with direct errno tracing and targeted data policy'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -580,7 +598,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: j7duolte-twrp-3.3-native-ffs-trace-readable-data-${{ github.run_id }}
+          name: j7duolte-twrp-3.3-native-ffs-force-ffs-entry-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -598,7 +616,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="workspace/out/target/product/$DEVICE_NAME"
-          TAG="j7duolte-twrp-3.3-native-ffs-trace-readable-data-${{ github.run_id }}"
+          TAG="j7duolte-twrp-3.3-native-ffs-force-ffs-entry-${{ github.run_id }}"
           gh release create "$TAG" \
             "$OUT/recovery.img" \
             "$OUT/recovery.tar" \
@@ -606,6 +624,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 trace-readable data diagnostic ${{ github.run_id }}" \
-            --notes "Diagnostic build: adbd direct/native traces use a dedicated SELinux file type readable by TWRP, while recovery receives targeted access to freshly formatted system_data_file and media_rw_data_file content. Exact CUL1 kernel/DT and Samsung ConfigFS sequence are retained. MTP remains excluded. Not a stable community release." \
+            --title "J720F TWRP 3.3 forced FunctionFS-entry diagnostic ${{ github.run_id }}" \
+            --notes "Diagnostic/fix build: recovery adbd bypasses the upstream one-shot ep0 gate and is forced into the ConfigFS FunctionFS path selected by this device tree. Main-gate and direct syscall errno traces remain readable, targeted /data access is retained, and the exact CUL1 kernel/DT are unchanged. MTP remains excluded. Not a stable community release." \
             --prerelease
