@@ -43,3 +43,11 @@ instruments `adb/daemon/main.cpp`, bypasses its one-shot ep0 preflight when the
 J720F recovery transport marker is present, and forces `usb_init()` to choose
 FunctionFS. The existing open thread continues retrying and records exact ep0,
 descriptor, endpoint and property results.
+
+## Forced-entry property-read correction
+
+The first forced-entry hardware trace still selected TCP fallback because adbd
+read an empty `j720f.usb.transport` value. The device maps the `j720f.` prefix
+to `twrp_prop`, but adbd had no read permission for that property area. The
+current revision requires `get_prop(adbd, twrp_prop)` in source and in the
+expanded compiled policy before packaging the image.
