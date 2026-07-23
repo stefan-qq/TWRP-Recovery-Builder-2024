@@ -383,7 +383,8 @@ jobs:
           test ! -e recovery/root/sbin/j720f_usb_report.sh
 
           grep -q 'mount configfs none /sys/kernel/config' recovery/root/init.recovery.usb.rc
-          grep -q 'mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000' recovery/root/init.recovery.usb.rc
+          grep -q 'mount functionfs adb /dev/usb-ffs/adb uid=0,gid=0' recovery/root/init.recovery.usb.rc
+          reject_grep 'FunctionFS endpoints are still shell-owned while adbd runs as root' -q 'mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000' recovery/root/init.recovery.usb.rc
           grep -q '/sys/kernel/config/usb_gadget/g1/functions/ffs.adb' recovery/root/init.recovery.usb.rc
           grep -q '/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb' recovery/root/init.recovery.usb.rc
           grep -q 'on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
@@ -412,9 +413,9 @@ jobs:
             echo 'MTP must remain isolated in this ADB transport test' >&2
             exit 1
           fi
-          grep -q '/dev/usb-ffs/adb/ep0' recovery/root/ueventd.samsungexynos7885.rc
-          grep -q '/dev/usb-ffs/adb/ep1' recovery/root/ueventd.samsungexynos7885.rc
-          grep -q '/dev/usb-ffs/adb/ep2' recovery/root/ueventd.samsungexynos7885.rc
+          grep -Eq '^/dev/usb-ffs/adb/ep0[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
+          grep -Eq '^/dev/usb-ffs/adb/ep1[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
+          grep -Eq '^/dev/usb-ffs/adb/ep2[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
           grep -q 'service j7diag /sbin/sh /sbin/j720f_runtime_diag.sh' recovery/root/init.recovery.usb.rc
           grep -q 'group root shell readproc' recovery/root/init.recovery.usb.rc
           grep -q 'seclabel u:r:recovery:s0' recovery/root/init.recovery.usb.rc

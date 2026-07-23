@@ -51,3 +51,11 @@ read an empty `j720f.usb.transport` value. The device maps the `j720f.` prefix
 to `twrp_prop`, but adbd had no read permission for that property area. The
 current revision requires `get_prop(adbd, twrp_prop)` in source and in the
 expanded compiled policy before packaging the image.
+
+## Root-owned FunctionFS endpoint correction
+
+The forced-entry hardware trace proved that adbd now enters FunctionFS but the
+first real `open(ep0, O_RDWR)` fails with `EACCES`. The mounted endpoint was
+mode 0600 and owned by `shell:shell`, while this recovery deliberately keeps
+adbd as UID/GID 0. The workflow now requires a root-owned FunctionFS mount and
+matching root endpoint permissions before it will build or publish an image.
