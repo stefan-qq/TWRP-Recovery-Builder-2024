@@ -59,3 +59,13 @@ first real `open(ep0, O_RDWR)` fails with `EACCES`. The mounted endpoint was
 mode 0600 and owned by `shell:shell`, while this recovery deliberately keeps
 adbd as UID/GID 0. The workflow now requires a root-owned FunctionFS mount and
 matching root endpoint permissions before it will build or publish an image.
+
+## Pure ConfigFS bind correction
+
+The root-owned endpoint hardware trace showed adbd completing FunctionFS and
+publishing `sys.usb.ffs.ready=1`, while the kernel rejected the UDC bind with
+`Config c/1 of g1 needs at least one function`. The recovery action still mixed
+ConfigFS with Samsung's legacy android_usb sysfs interface. The current workflow
+requires a ConfigFS-only ADB state machine, rejects every
+`/sys/class/android_usb/android0/` write in the device USB rc, and verifies that
+the `ffs.adb` link is created in the ready action immediately before UDC bind.

@@ -392,6 +392,7 @@ jobs:
           grep -q 'setprop j720f.usb.transport native-android71-ffs' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.adbd_domain_only 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.direct_trace 1' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.pure_configfs 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop persist.adb.trace_mask all' recovery/root/init.recovery.usb.rc
           grep -q 'write /tmp/J720F_ADBD_USB_TRACE.txt J720F_USB_DIAG_INIT_PRECREATED' recovery/root/init.recovery.usb.rc
           grep -q 'restorecon /tmp/J720F_ADBD_USB_TRACE.txt' recovery/root/init.recovery.usb.rc
@@ -399,10 +400,33 @@ jobs:
           grep -q 'restorecon /tmp/J720F_ADBD_TRACE.txt' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.trace_precreated 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.pure_configfs_bind_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.udc_bind_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
+          python3 - <<'PY_CHECK'
+          from pathlib import Path
+
+          usb = Path("recovery/root/init.recovery.usb.rc").read_text()
+          trigger = (
+              "on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1 "
+              "&& property:sys.usb.configfs=1"
+          )
+          link = (
+              "symlink /sys/kernel/config/usb_gadget/g1/functions/ffs.adb "
+              "/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb"
+          )
+          if usb.count(link) != 1:
+              raise SystemExit("expected exactly one ConfigFS ffs.adb link")
+          if usb.find(trigger) < 0 or usb.find(link) < usb.find(trigger):
+              raise SystemExit("ffs.adb link must be created in the ffs.ready bind action")
+          print("Verified pure ConfigFS ffs.adb link ordering")
+          PY_CHECK
           if grep -q 'functions/adb.0\|configs/c.1/adb.0\|/dev/android_adb' recovery/root/init.recovery.usb.rc; then
             echo 'Rejected direct legacy ADB route remains' >&2
+            exit 1
+          fi
+          if grep -q '/sys/class/android_usb/android0/' recovery/root/init.recovery.usb.rc; then
+            echo 'Rejected mixed legacy android_usb writes in ConfigFS ADB action' >&2
             exit 1
           fi
           if grep -q '/sys/fs/selinux/enforce\|/sbin/permissive.sh' recovery/root/init.recovery.usb.rc; then
