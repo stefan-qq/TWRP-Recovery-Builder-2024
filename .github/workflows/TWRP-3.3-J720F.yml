@@ -393,6 +393,7 @@ jobs:
           grep -q 'setprop j720f.usb.adbd_domain_only 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.direct_trace 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.pure_configfs 1' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.stock_link_order 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop persist.adb.trace_mask all' recovery/root/init.recovery.usb.rc
           grep -q 'write /tmp/J720F_ADBD_USB_TRACE.txt J720F_USB_DIAG_INIT_PRECREATED' recovery/root/init.recovery.usb.rc
           grep -q 'restorecon /tmp/J720F_ADBD_USB_TRACE.txt' recovery/root/init.recovery.usb.rc
@@ -400,7 +401,7 @@ jobs:
           grep -q 'restorecon /tmp/J720F_ADBD_TRACE.txt' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.trace_precreated 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.recovery.usb.rc
-          grep -q 'setprop j720f.usb.pure_configfs_bind_action 1' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.configfs_bind 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.udc_bind_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_action 1' recovery/root/init.recovery.usb.rc
           python3 - <<'PY_CHECK'
@@ -411,15 +412,28 @@ jobs:
               "on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1 "
               "&& property:sys.usb.configfs=1"
           )
+          mount = "mount functionfs adb /dev/usb-ffs/adb uid=0,gid=0"
           link = (
               "symlink /sys/kernel/config/usb_gadget/g1/functions/ffs.adb "
               "/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb"
           )
           if usb.count(link) != 1:
               raise SystemExit("expected exactly one ConfigFS ffs.adb link")
-          if usb.find(trigger) < 0 or usb.find(link) < usb.find(trigger):
-              raise SystemExit("ffs.adb link must be created in the ffs.ready bind action")
-          print("Verified pure ConfigFS ffs.adb link ordering")
+          link_index = usb.find(link)
+          mount_index = usb.find(mount)
+          trigger_index = usb.find(trigger)
+          if min(link_index, mount_index, trigger_index) < 0 or not (
+              link_index < mount_index < trigger_index
+          ):
+              raise SystemExit(
+                  "ffs.adb must be linked before FunctionFS is mounted and kept "
+                  "through the ffs.ready bind action"
+              )
+          if "rm /sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb" in usb:
+              raise SystemExit("USB none action must not remove the stock-order ffs.adb link")
+          if "j720f.usb.pure_configfs_bind_action" in usb:
+              raise SystemExit("overlength Android 7 property name remains")
+          print("Verified Samsung stock-order ConfigFS ffs.adb registration")
           PY_CHECK
           if grep -q 'functions/adb.0\|configs/c.1/adb.0\|/dev/android_adb' recovery/root/init.recovery.usb.rc; then
             echo 'Rejected direct legacy ADB route remains' >&2
@@ -605,8 +619,8 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with forced FunctionFS entry, readable tracing and targeted TWRP data access'
-            echo 'diagnostic=forced adbd FunctionFS path with explicit recovery-property read access, direct errno tracing and targeted data policy'
+            echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
+            echo 'diagnostic=Samsung stock-order persistent ffs.adb registration before FunctionFS mount and UDC bind after ffs.ready'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -652,6 +666,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 forced FunctionFS-entry diagnostic ${{ github.run_id }}" \
-            --notes "Diagnostic/fix build: recovery adbd can now read the j720f.usb.transport selector that drives the forced ConfigFS FunctionFS path. Main-gate and direct syscall errno traces remain readable, FunctionFS path labels are collected, targeted /data access is retained, and the exact CUL1 kernel/DT are unchanged. MTP remains excluded. Not a stable community release." \
+            --title "J720F TWRP 3.3 stock-order ConfigFS diagnostic ${{ github.run_id }}" \
+            --notes "Diagnostic/fix build: the ffs.adb function is registered with c.1 during fs, before FunctionFS is mounted, matching the exact CUL1 Samsung recovery order. The link is preserved across the none-to-adb transition and the UDC is bound only after native adbd publishes ffs.ready. Working targeted /data access and direct tracing are retained. MTP remains excluded. Not a stable community release." \
             --prerelease

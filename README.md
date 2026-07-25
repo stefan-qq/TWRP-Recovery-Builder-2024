@@ -60,12 +60,12 @@ mode 0600 and owned by `shell:shell`, while this recovery deliberately keeps
 adbd as UID/GID 0. The workflow now requires a root-owned FunctionFS mount and
 matching root endpoint permissions before it will build or publish an image.
 
-## Pure ConfigFS bind correction
+## Samsung stock-order ConfigFS correction
 
 The root-owned endpoint hardware trace showed adbd completing FunctionFS and
-publishing `sys.usb.ffs.ready=1`, while the kernel rejected the UDC bind with
-`Config c/1 of g1 needs at least one function`. The recovery action still mixed
-ConfigFS with Samsung's legacy android_usb sysfs interface. The current workflow
-requires a ConfigFS-only ADB state machine, rejects every
-`/sys/class/android_usb/android0/` write in the device USB rc, and verifies that
-the `ffs.adb` link is created in the ready action immediately before UDC bind.
+publishing `sys.usb.ffs.ready=1`, while both mixed and late-link ConfigFS tests
+were rejected with `Config c/1 of g1 needs at least one function`. The exact
+CUL1 Samsung recovery creates the `ffs.adb` configuration link before mounting
+FunctionFS and keeps it across USB state changes. The workflow now requires
+that same order, rejects removal of the link in the `none` action, and binds the
+UDC only after native adbd publishes `sys.usb.ffs.ready=1`.
