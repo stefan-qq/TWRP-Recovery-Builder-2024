@@ -211,6 +211,10 @@ jobs:
             "$SYSTEM_CORE/adb/adb_trace.cpp"
           grep -Fq 'J720F_INIT_UDC' \
             "$SYSTEM_CORE/init/util.cpp"
+          grep -Fq 'J720F_UDC_CONTROL' \
+            "$SYSTEM_CORE/init/util.cpp"
+          grep -Fq '/sys/kernel/config/usb_gadget/g_acm_diag/functions/acm.usb0' \
+            "$SYSTEM_CORE/init/util.cpp"
           grep -Fq '/sys/kernel/config/usb_gadget/g1/UDC' \
             "$SYSTEM_CORE/init/util.cpp"
           if grep -Fq '/data/adb/adb-' "$SYSTEM_CORE/adb/adb_trace.cpp"; then
@@ -608,6 +612,8 @@ jobs:
           grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"
+          grep -aFq 'J720F_UDC_CONTROL' "$OUT/recovery/root/init"
+          grep -aFq 'g_acm_diag' "$OUT/recovery/root/init"
           reject_grep 'instrumented adbd still embeds /data ADB trace path' -aFq '/data/adb/adb-' "$OUT/recovery/root/sbin/adbd"
           test ! -e "$OUT/recovery/root/system/bin/adbd"
           test ! -e "$OUT/recovery/root/system/bin/linker64"
@@ -653,7 +659,7 @@ jobs:
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
             echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
-            echo 'diagnostic=init-side UDC open/write errno and immediate ConfigFS/DWC3/android_usb state tracing with USB behavior unchanged'
+            echo 'diagnostic=init-side UDC errno tracing plus one self-cleaning ConfigFS CDC ACM control bind after the proven ffs.adb EINVAL'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -699,6 +705,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 init-side UDC diagnostic ${{ github.run_id }}" \
-            --notes "Diagnostic build: USB behavior is unchanged. PID 1 now records the exact g1/UDC open/write result and errno plus immediate ConfigFS, DWC3 and Samsung android_usb state around the bind attempt into the existing direct trace. Working /data and native FunctionFS adbd are retained. MTP remains excluded. Not a stable community release." \
+            --title "J720F TWRP 3.3 UDC ACM control diagnostic ${{ github.run_id }}" \
+            --notes "Diagnostic build: PID 1 records the exact failed g1/UDC bind and, only after the known ffs.adb EINVAL, performs one temporary ConfigFS CDC ACM bind against the same DWC3 UDC, records the result, unbinds and cleans it up. This isolates FunctionFS/composite failure from lower DWC3/UDC failure. Working /data and native FunctionFS adbd are retained. MTP remains excluded. Not a stable community release." \
             --prerelease

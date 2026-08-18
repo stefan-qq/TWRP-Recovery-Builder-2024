@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Instrument Android 7.1 init's ConfigFS UDC write for SM-J720F.
 
-This diagnostic does not change USB sequencing. It patches only init/util.cpp's
-write_file() path and records the exact PID 1 open/write errno plus immediate
-USB/ConfigFS state around writes to g1/UDC. Output is appended to the existing
-/tmp/J720F_ADBD_USB_TRACE.txt file that the device tree already pre-creates,
-labels for init/adbd/recovery access, and includes in the runtime report.
+This diagnostic preserves the normal USB sequencing through the proven failed
+ffs.adb UDC bind. If that exact PID 1 write returns EINVAL, it then performs one
+self-contained ConfigFS CDC ACM control bind against the same UDC, logs every
+step, unbinds/cleans up, and returns to the normal init action. This separates a
+FunctionFS/composite bind failure from a lower DWC3/UDC bind failure without
+changing adbd, FunctionFS descriptors, /data, MTP, or SELinux policy.
+
+Output is appended to the existing /tmp/J720F_ADBD_USB_TRACE.txt file that the
+device tree already pre-creates, labels for init/adbd/recovery access, and
+includes in the runtime report.
 
 Strict anchors make the build fail if the donor system/core source changes.
 """
@@ -19,6 +24,7 @@ import subprocess
 from pathlib import Path
 
 MARKER = "J720F_INIT_UDC"
+CONTROL_MARKER = "J720F_UDC_CONTROL"
 UDC_PATH = "/sys/kernel/config/usb_gadget/g1/UDC"
 TRACE_PATH = "/tmp/J720F_ADBD_USB_TRACE.txt"
 
@@ -75,8 +81,11 @@ def patch_util(text: str) -> str:
 '''
 
     new_write = r'''// J720F init-side ConfigFS diagnostic. This branch is not a release build.
-// It observes only the g1/UDC write and appends to the already-labeled adbd
-// trace file. No USB state is changed by these helpers.
+// The normal ffs.adb path is observed without modification. Only after that
+// exact controller bind returns EINVAL, PID 1 briefly creates a second ConfigFS
+// gadget with CDC ACM, tries the same UDC, records the result, then unbinds and
+// removes the control gadget. This is an A/B diagnostic, not a permanent USB
+// implementation.
 static const char* const kJ720fUdcPath = "/sys/kernel/config/usb_gadget/g1/UDC";
 static const char* const kJ720fUdcTracePath = "/tmp/J720F_ADBD_USB_TRACE.txt";
 
@@ -260,6 +269,177 @@ static void j720f_init_udc_snapshot(const char* phase, const char* requested) {
     errno = saved_errno;
 }
 
+
+static bool j720f_udc_control_attempted = false;
+
+static int j720f_udc_control_mkdir(const char* stage, const char* path, int* error_out) {
+    const int saved_errno = errno;
+    errno = 0;
+    int result = mkdir(path, 0770);
+    int operation_errno = result == 0 ? 0 : errno;
+    if (result < 0 && operation_errno == EEXIST) {
+        result = 0;
+        operation_errno = 0;
+    }
+    j720f_init_udc_trace(
+        "J720F_UDC_CONTROL event=step stage=%s op=mkdir path=%s result=%d errno=%d (%s)",
+        stage, path, result, operation_errno,
+        operation_errno == 0 ? "ok" : strerror(operation_errno));
+    if (error_out != nullptr) *error_out = operation_errno;
+    errno = saved_errno;
+    return result;
+}
+
+static int j720f_udc_control_symlink(const char* stage, const char* target,
+                                     const char* linkpath, int* error_out) {
+    const int saved_errno = errno;
+    errno = 0;
+    int result = symlink(target, linkpath);
+    int operation_errno = result == 0 ? 0 : errno;
+    if (result < 0 && operation_errno == EEXIST) {
+        result = 0;
+        operation_errno = 0;
+    }
+    j720f_init_udc_trace(
+        "J720F_UDC_CONTROL event=step stage=%s op=symlink target=%s path=%s result=%d errno=%d (%s)",
+        stage, target, linkpath, result, operation_errno,
+        operation_errno == 0 ? "ok" : strerror(operation_errno));
+    if (error_out != nullptr) *error_out = operation_errno;
+    errno = saved_errno;
+    return result;
+}
+
+static int j720f_udc_control_write(const char* stage, const char* path,
+                                   const char* value, ssize_t* raw_result,
+                                   int* error_out) {
+    const int saved_errno = errno;
+    errno = 0;
+    int fd = TEMP_FAILURE_RETRY(open(path, O_WRONLY | O_CLOEXEC));
+    if (fd < 0) {
+        const int operation_errno = errno;
+        j720f_init_udc_trace(
+            "J720F_UDC_CONTROL event=step stage=%s op=open path=%s result=-1 errno=%d (%s)",
+            stage, path, operation_errno, strerror(operation_errno));
+        if (raw_result != nullptr) *raw_result = -1;
+        if (error_out != nullptr) *error_out = operation_errno;
+        errno = saved_errno;
+        return -1;
+    }
+
+    const size_t expected = strlen(value);
+    errno = 0;
+    ssize_t written = TEMP_FAILURE_RETRY(write(fd, value, expected));
+    int operation_errno = 0;
+    if (written < 0) {
+        operation_errno = errno;
+    } else if (written != static_cast<ssize_t>(expected)) {
+        operation_errno = EIO;
+    }
+    close(fd);
+
+    j720f_init_udc_trace(
+        "J720F_UDC_CONTROL event=step stage=%s op=write path=%s raw=%zd expected=%zu errno=%d (%s)",
+        stage, path, written, expected, operation_errno,
+        operation_errno == 0 ? "ok" : strerror(operation_errno));
+    if (raw_result != nullptr) *raw_result = written;
+    if (error_out != nullptr) *error_out = operation_errno;
+    errno = saved_errno;
+    return operation_errno == 0 ? 0 : -1;
+}
+
+static void j720f_udc_control_cleanup(void) {
+    const int saved_errno = errno;
+    // The control gadget is always unbound before removal. Cleanup failures are
+    // diagnostic-only and must never affect init's original write_file result.
+    unlink("/sys/kernel/config/usb_gadget/g_acm_diag/configs/c.1/acm.usb0");
+    rmdir("/sys/kernel/config/usb_gadget/g_acm_diag/functions/acm.usb0");
+    rmdir("/sys/kernel/config/usb_gadget/g_acm_diag/configs/c.1");
+    rmdir("/sys/kernel/config/usb_gadget/g_acm_diag");
+    errno = saved_errno;
+}
+
+static void j720f_run_udc_acm_control(void) {
+    const int saved_errno = errno;
+    if (j720f_udc_control_attempted) {
+        errno = saved_errno;
+        return;
+    }
+    j720f_udc_control_attempted = true;
+
+    const char* const gadget = "/sys/kernel/config/usb_gadget/g_acm_diag";
+    const char* const config = "/sys/kernel/config/usb_gadget/g_acm_diag/configs/c.1";
+    const char* const function = "/sys/kernel/config/usb_gadget/g_acm_diag/functions/acm.usb0";
+    const char* const link = "/sys/kernel/config/usb_gadget/g_acm_diag/configs/c.1/acm.usb0";
+    const char* const udc = "/sys/kernel/config/usb_gadget/g_acm_diag/UDC";
+
+    j720f_init_udc_trace(
+        "J720F_UDC_CONTROL event=begin test=acm controller=13600000.dwc3 trigger=ffs_bind_einval");
+    j720f_init_udc_trace_file("control_before", "udc_state",
+                              "/sys/class/udc/13600000.dwc3/state");
+    j720f_init_udc_trace_file("control_before", "g1_udc", kJ720fUdcPath);
+
+    bool ok = true;
+    const char* failed_stage = "none";
+    int failed_errno = 0;
+    int step_errno = 0;
+    ssize_t bind_raw = -1;
+    int bind_errno = 0;
+
+    if (ok && j720f_udc_control_mkdir("mkdir_gadget", gadget, &step_errno) < 0) {
+        ok = false; failed_stage = "mkdir_gadget"; failed_errno = step_errno;
+    }
+    if (ok && j720f_udc_control_write("idVendor",
+            "/sys/kernel/config/usb_gadget/g_acm_diag/idVendor", "0x04E8", nullptr,
+            &step_errno) < 0) {
+        ok = false; failed_stage = "idVendor"; failed_errno = step_errno;
+    }
+    if (ok && j720f_udc_control_write("idProduct",
+            "/sys/kernel/config/usb_gadget/g_acm_diag/idProduct", "0x6860", nullptr,
+            &step_errno) < 0) {
+        ok = false; failed_stage = "idProduct"; failed_errno = step_errno;
+    }
+    if (ok && j720f_udc_control_mkdir("mkdir_config", config, &step_errno) < 0) {
+        ok = false; failed_stage = "mkdir_config"; failed_errno = step_errno;
+    }
+    if (ok && j720f_udc_control_mkdir("mkdir_acm", function, &step_errno) < 0) {
+        ok = false; failed_stage = "mkdir_acm"; failed_errno = step_errno;
+    }
+    if (ok && j720f_udc_control_symlink("link_acm", function, link, &step_errno) < 0) {
+        ok = false; failed_stage = "link_acm"; failed_errno = step_errno;
+    }
+    if (ok) {
+        const int bind_result = j720f_udc_control_write(
+            "bind_udc", udc, "13600000.dwc3", &bind_raw, &bind_errno);
+        if (bind_result < 0) {
+            ok = false; failed_stage = "bind_udc"; failed_errno = bind_errno;
+        }
+    }
+
+    j720f_init_udc_trace_file("control_after_bind", "udc_state",
+                              "/sys/class/udc/13600000.dwc3/state");
+    j720f_init_udc_trace_file("control_after_bind", "acm_udc", udc);
+
+    j720f_init_udc_trace(
+        "J720F_UDC_CONTROL event=summary test=acm result=%d stage=%s errno=%d (%s) bind_raw=%zd bind_errno=%d (%s)",
+        ok ? 0 : -1, ok ? "bind_udc" : failed_stage,
+        ok ? 0 : failed_errno,
+        (ok || failed_errno == 0) ? "ok" : strerror(failed_errno),
+        bind_raw, bind_errno, bind_errno == 0 ? "ok" : strerror(bind_errno));
+
+    // If ACM bound, a newline is the ConfigFS empty-string unbind operation.
+    // Do not leave the control gadget attached after collecting the A/B result.
+    if (bind_raw >= 0 && bind_errno == 0) {
+        ssize_t unbind_raw = -1;
+        int unbind_errno = 0;
+        j720f_udc_control_write("unbind_udc", udc, "\n", &unbind_raw, &unbind_errno);
+        j720f_init_udc_trace_file("control_after_unbind", "udc_state",
+                                  "/sys/class/udc/13600000.dwc3/state");
+    }
+    j720f_udc_control_cleanup();
+    j720f_init_udc_trace("J720F_UDC_CONTROL event=end test=acm");
+    errno = saved_errno;
+}
+
 int write_file(const char* path, const char* content) {
     const bool trace_udc = !strcmp(path, kJ720fUdcPath);
     if (trace_udc) {
@@ -295,6 +475,9 @@ int write_file(const char* path, const char* content) {
     const int final_errno = errno;
     if (trace_udc) {
         j720f_init_udc_snapshot("after", content);
+        if (result == -1 && write_errno == EINVAL && !strcmp(content, "13600000.dwc3")) {
+            j720f_run_udc_acm_control();
+        }
         j720f_init_udc_trace("event=write_file_exit path=%s requested=%s result=%d write_errno=%d (%s)",
                              path, content, result, write_errno,
                              write_errno == 0 ? "ok" : strerror(write_errno));
@@ -329,6 +512,8 @@ def main() -> None:
         "before_sha256": sha256(original),
         "after_sha256": sha256(updated),
         "marker": MARKER,
+        "control_marker": CONTROL_MARKER,
+        "control_test": "ConfigFS CDC ACM A/B bind after exact ffs.adb EINVAL",
         "udc_path": UDC_PATH,
         "trace_path": TRACE_PATH,
     }
