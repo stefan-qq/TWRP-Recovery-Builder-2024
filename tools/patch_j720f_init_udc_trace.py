@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Instrument Android 7.1 init's ConfigFS UDC write for SM-J720F.
 
-This diagnostic preserves the normal USB sequencing through the proven failed
-ffs.adb UDC bind. If that exact PID 1 write returns EINVAL, it then performs one
-self-contained ConfigFS CDC ACM control bind against the same UDC, logs every
-step, unbinds/cleans up, and returns to the normal init action. This separates a
-FunctionFS/composite bind failure from a lower DWC3/UDC bind failure without
-changing adbd, FunctionFS descriptors, /data, MTP, or SELinux policy.
+This diagnostic preserves the stock-style USB sequencing but accounts for the
+Samsung CONFIG_USB_CONFIGFS_UEVENT function-selection layer. The stock recovery
+writes "adb" to android0/functions; on the current recovery that write leaves the
+sysfs list empty even though ffs.adb is linked. PID 1 now records that write and,
+only when its readback is still empty, retries with FunctionFS's kernel-visible
+usb_function name ("Function FS Gadget") before the normal UDC bind. Existing
+UDC/ACM tracing remains as a fallback diagnostic.
 
 Output is appended to the existing /tmp/J720F_ADBD_USB_TRACE.txt file that the
 device tree already pre-creates, labels for init/adbd/recovery access, and
@@ -87,6 +88,8 @@ def patch_util(text: str) -> str:
 // removes the control gadget. This is an A/B diagnostic, not a permanent USB
 // implementation.
 static const char* const kJ720fUdcPath = "/sys/kernel/config/usb_gadget/g1/UDC";
+static const char* const kJ720fAndroidFunctionsPath = "/sys/class/android_usb/android0/functions";
+static const char* const kJ720fFfsKernelFunctionName = "Function FS Gadget";
 static const char* const kJ720fUdcTracePath = "/tmp/J720F_ADBD_USB_TRACE.txt";
 
 static void j720f_init_udc_trace(const char* format, ...) {
@@ -158,6 +161,75 @@ static void j720f_init_udc_trace_file(const char* phase, const char* label,
     }
     j720f_init_udc_trace("phase=%s item=%s path=%s value=%s",
                          phase, label, path, count == 0 ? "<empty>" : value);
+    errno = saved_errno;
+}
+
+static bool j720f_init_udc_file_has_nonspace(const char* path) {
+    const int saved_errno = errno;
+    int fd = TEMP_FAILURE_RETRY(open(path, O_RDONLY | O_CLOEXEC));
+    if (fd < 0) {
+        errno = saved_errno;
+        return false;
+    }
+    char value[256];
+    ssize_t count = TEMP_FAILURE_RETRY(read(fd, value, sizeof(value)));
+    close(fd);
+    if (count <= 0) {
+        errno = saved_errno;
+        return false;
+    }
+    for (ssize_t i = 0; i < count; ++i) {
+        if (value[i] != ' ' && value[i] != '\t' && value[i] != '\r' && value[i] != '\n') {
+            errno = saved_errno;
+            return true;
+        }
+    }
+    errno = saved_errno;
+    return false;
+}
+
+static void j720f_init_udc_select_ffs_if_needed(void) {
+    const int saved_errno = errno;
+    j720f_init_udc_trace_file("functions_after_stock_selector", "android_usb_functions",
+                              kJ720fAndroidFunctionsPath);
+    if (j720f_init_udc_file_has_nonspace(kJ720fAndroidFunctionsPath)) {
+        j720f_init_udc_trace(
+            "J720F_UEVENT_SELECTOR event=skip reason=functions_already_selected");
+        errno = saved_errno;
+        return;
+    }
+
+    errno = 0;
+    int fd = TEMP_FAILURE_RETRY(open(kJ720fAndroidFunctionsPath, O_WRONLY | O_CLOEXEC));
+    if (fd < 0) {
+        const int operation_errno = errno;
+        j720f_init_udc_trace(
+            "J720F_UEVENT_SELECTOR event=fallback_open result=-1 errno=%d (%s)",
+            operation_errno, strerror(operation_errno));
+        errno = saved_errno;
+        return;
+    }
+
+    const size_t expected = strlen(kJ720fFfsKernelFunctionName);
+    errno = 0;
+    ssize_t written = TEMP_FAILURE_RETRY(write(fd, kJ720fFfsKernelFunctionName, expected));
+    int operation_errno = 0;
+    if (written < 0) {
+        operation_errno = errno;
+    } else if (written != static_cast<ssize_t>(expected)) {
+        operation_errno = EIO;
+    }
+    close(fd);
+
+    j720f_init_udc_trace(
+        "J720F_UEVENT_SELECTOR event=fallback_write requested=Function_FS_Gadget raw=%zd expected=%zu errno=%d (%s)",
+        written, expected, operation_errno,
+        operation_errno == 0 ? "ok" : strerror(operation_errno));
+    j720f_init_udc_trace_file("functions_after_ffs_selector", "android_usb_functions",
+                              kJ720fAndroidFunctionsPath);
+    j720f_init_udc_trace(
+        "J720F_UEVENT_SELECTOR event=summary selected=%d",
+        j720f_init_udc_file_has_nonspace(kJ720fAndroidFunctionsPath) ? 1 : 0);
     errno = saved_errno;
 }
 
@@ -466,9 +538,14 @@ static void j720f_run_udc_acm_control(void) {
 
 int write_file(const char* path, const char* content) {
     const bool trace_udc = !strcmp(path, kJ720fUdcPath);
+    const bool trace_functions = !strcmp(path, kJ720fAndroidFunctionsPath);
     if (trace_udc) {
         j720f_init_udc_trace("event=write_file_enter path=%s requested=%s", path, content);
         j720f_init_udc_snapshot("before", content);
+    }
+    if (trace_functions) {
+        j720f_init_udc_trace(
+            "J720F_UEVENT_SELECTOR event=stock_write_enter path=%s requested=%s", path, content);
     }
 
     int fd = TEMP_FAILURE_RETRY(open(path, O_WRONLY|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0600));
@@ -478,6 +555,11 @@ int write_file(const char* path, const char* content) {
             j720f_init_udc_trace("event=udc_open_result fd=-1 errno=%d (%s)",
                                  operation_errno, strerror(operation_errno));
             j720f_init_udc_snapshot("after_open_failure", content);
+        }
+        if (trace_functions) {
+            j720f_init_udc_trace(
+                "J720F_UEVENT_SELECTOR event=stock_open_result fd=-1 errno=%d (%s)",
+                operation_errno, strerror(operation_errno));
         }
         NOTICE("write_file: Unable to open '%s': %s\n", path, strerror(operation_errno));
         errno = operation_errno;
@@ -491,12 +573,26 @@ int write_file(const char* path, const char* content) {
                              fd, result, strlen(content), write_errno,
                              write_errno == 0 ? "ok" : strerror(write_errno));
     }
+    if (trace_functions) {
+        j720f_init_udc_trace(
+            "J720F_UEVENT_SELECTOR event=stock_write_result fd=%d result=%d bytes=%zu errno=%d (%s)",
+            fd, result, strlen(content), write_errno,
+            write_errno == 0 ? "ok" : strerror(write_errno));
+    }
     if (result == -1) {
         NOTICE("write_file: Unable to write to '%s': %s\n", path, strerror(write_errno));
     }
 
     close(fd);
     const int final_errno = errno;
+    if (trace_functions && result == 0 && !strcmp(content, "adb")) {
+        // Samsung CONFIG_USB_CONFIGFS_UEVENT keeps newly linked ConfigFS
+        // functions on gi->linked_func. android0/functions selects by the
+        // kernel usb_function->name and moves the match to cfg->func_list.
+        // FunctionFS's kernel-visible name is "Function FS Gadget", not the
+        // ConfigFS type/instance spelling "ffs.adb".
+        j720f_init_udc_select_ffs_if_needed();
+    }
     if (trace_udc) {
         j720f_init_udc_snapshot("after", content);
         if (result == -1 && write_errno == EINVAL && !strcmp(content, "13600000.dwc3")) {
@@ -538,6 +634,7 @@ def main() -> None:
         "marker": MARKER,
         "control_marker": CONTROL_MARKER,
         "control_test": "same-g1 ConfigFS CDC ACM A/B bind after exact ffs.adb EINVAL",
+        "uevent_selector_fallback": "Function FS Gadget",
         "udc_path": UDC_PATH,
         "trace_path": TRACE_PATH,
     }
