@@ -213,7 +213,7 @@ jobs:
             "$SYSTEM_CORE/init/util.cpp"
           grep -Fq 'J720F_UDC_CONTROL' \
             "$SYSTEM_CORE/init/util.cpp"
-          grep -Fq '/sys/kernel/config/usb_gadget/g_acm_diag/functions/acm.usb0' \
+          grep -Fq '/sys/kernel/config/usb_gadget/g1/functions/acm.GS0' \
             "$SYSTEM_CORE/init/util.cpp"
           grep -Fq '/sys/kernel/config/usb_gadget/g1/UDC' \
             "$SYSTEM_CORE/init/util.cpp"
@@ -613,7 +613,7 @@ jobs:
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"
           grep -aFq 'J720F_UDC_CONTROL' "$OUT/recovery/root/init"
-          grep -aFq 'g_acm_diag' "$OUT/recovery/root/init"
+          grep -aFq 'acm_same_g1' "$OUT/recovery/root/init"
           reject_grep 'instrumented adbd still embeds /data ADB trace path' -aFq '/data/adb/adb-' "$OUT/recovery/root/sbin/adbd"
           test ! -e "$OUT/recovery/root/system/bin/adbd"
           test ! -e "$OUT/recovery/root/system/bin/linker64"
@@ -659,7 +659,7 @@ jobs:
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
             echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
-            echo 'diagnostic=init-side UDC errno tracing plus one self-cleaning ConfigFS CDC ACM control bind after the proven ffs.adb EINVAL'
+            echo 'diagnostic=init-side UDC errno tracing plus one self-cleaning same-g1 ConfigFS CDC ACM control bind after the proven ffs.adb EINVAL'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"

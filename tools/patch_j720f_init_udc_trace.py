@@ -290,6 +290,20 @@ static int j720f_udc_control_mkdir(const char* stage, const char* path, int* err
     return result;
 }
 
+static int j720f_udc_control_unlink(const char* stage, const char* path, int* error_out) {
+    const int saved_errno = errno;
+    errno = 0;
+    int result = unlink(path);
+    int operation_errno = result == 0 ? 0 : errno;
+    j720f_init_udc_trace(
+        "J720F_UDC_CONTROL event=step stage=%s op=unlink path=%s result=%d errno=%d (%s)",
+        stage, path, result, operation_errno,
+        operation_errno == 0 ? "ok" : strerror(operation_errno));
+    if (error_out != nullptr) *error_out = operation_errno;
+    errno = saved_errno;
+    return result;
+}
+
 static int j720f_udc_control_symlink(const char* stage, const char* target,
                                      const char* linkpath, int* error_out) {
     const int saved_errno = errno;
@@ -347,17 +361,6 @@ static int j720f_udc_control_write(const char* stage, const char* path,
     return operation_errno == 0 ? 0 : -1;
 }
 
-static void j720f_udc_control_cleanup(void) {
-    const int saved_errno = errno;
-    // The control gadget is always unbound before removal. Cleanup failures are
-    // diagnostic-only and must never affect init's original write_file result.
-    unlink("/sys/kernel/config/usb_gadget/g_acm_diag/configs/c.1/acm.usb0");
-    rmdir("/sys/kernel/config/usb_gadget/g_acm_diag/functions/acm.usb0");
-    rmdir("/sys/kernel/config/usb_gadget/g_acm_diag/configs/c.1");
-    rmdir("/sys/kernel/config/usb_gadget/g_acm_diag");
-    errno = saved_errno;
-}
-
 static void j720f_run_udc_acm_control(void) {
     const int saved_errno = errno;
     if (j720f_udc_control_attempted) {
@@ -366,17 +369,25 @@ static void j720f_run_udc_acm_control(void) {
     }
     j720f_udc_control_attempted = true;
 
-    const char* const gadget = "/sys/kernel/config/usb_gadget/g_acm_diag";
-    const char* const config = "/sys/kernel/config/usb_gadget/g_acm_diag/configs/c.1";
-    const char* const function = "/sys/kernel/config/usb_gadget/g_acm_diag/functions/acm.usb0";
-    const char* const link = "/sys/kernel/config/usb_gadget/g_acm_diag/configs/c.1/acm.usb0";
-    const char* const udc = "/sys/kernel/config/usb_gadget/g_acm_diag/UDC";
+    // Reuse the already-created g1 gadget. The previous control build tried to
+    // create a second top-level gadget and this Samsung kernel returned ENOMEM
+    // at that mkdir, before ACM or the UDC was exercised. g1 is unbound here
+    // because the triggering ffs.adb attach just returned EINVAL.
+    const char* const ffs_function = "/sys/kernel/config/usb_gadget/g1/functions/ffs.adb";
+    const char* const ffs_link = "/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb";
+    const char* const acm_function = "/sys/kernel/config/usb_gadget/g1/functions/acm.GS0";
+    const char* const acm_link = "/sys/kernel/config/usb_gadget/g1/configs/c.1/acm.GS0";
 
     j720f_init_udc_trace(
-        "J720F_UDC_CONTROL event=begin test=acm controller=13600000.dwc3 trigger=ffs_bind_einval");
+        "J720F_UDC_CONTROL event=begin test=acm_same_g1 controller=13600000.dwc3 trigger=ffs_bind_einval");
     j720f_init_udc_trace_file("control_before", "udc_state",
                               "/sys/class/udc/13600000.dwc3/state");
     j720f_init_udc_trace_file("control_before", "g1_udc", kJ720fUdcPath);
+    j720f_init_udc_trace_link("control_before", "ffs_adb_link", ffs_link);
+    j720f_init_udc_trace_dir("control_before", "functions",
+                             "/sys/kernel/config/usb_gadget/g1/functions");
+    j720f_init_udc_trace_dir("control_before", "config_c1",
+                             "/sys/kernel/config/usb_gadget/g1/configs/c.1");
 
     bool ok = true;
     const char* failed_stage = "none";
@@ -384,32 +395,20 @@ static void j720f_run_udc_acm_control(void) {
     int step_errno = 0;
     ssize_t bind_raw = -1;
     int bind_errno = 0;
+    int restore_errno = 0;
 
-    if (ok && j720f_udc_control_mkdir("mkdir_gadget", gadget, &step_errno) < 0) {
-        ok = false; failed_stage = "mkdir_gadget"; failed_errno = step_errno;
+    if (ok && j720f_udc_control_unlink("unlink_ffs", ffs_link, &step_errno) < 0) {
+        ok = false; failed_stage = "unlink_ffs"; failed_errno = step_errno;
     }
-    if (ok && j720f_udc_control_write("idVendor",
-            "/sys/kernel/config/usb_gadget/g_acm_diag/idVendor", "0x04E8", nullptr,
-            &step_errno) < 0) {
-        ok = false; failed_stage = "idVendor"; failed_errno = step_errno;
-    }
-    if (ok && j720f_udc_control_write("idProduct",
-            "/sys/kernel/config/usb_gadget/g_acm_diag/idProduct", "0x6860", nullptr,
-            &step_errno) < 0) {
-        ok = false; failed_stage = "idProduct"; failed_errno = step_errno;
-    }
-    if (ok && j720f_udc_control_mkdir("mkdir_config", config, &step_errno) < 0) {
-        ok = false; failed_stage = "mkdir_config"; failed_errno = step_errno;
-    }
-    if (ok && j720f_udc_control_mkdir("mkdir_acm", function, &step_errno) < 0) {
+    if (ok && j720f_udc_control_mkdir("mkdir_acm", acm_function, &step_errno) < 0) {
         ok = false; failed_stage = "mkdir_acm"; failed_errno = step_errno;
     }
-    if (ok && j720f_udc_control_symlink("link_acm", function, link, &step_errno) < 0) {
+    if (ok && j720f_udc_control_symlink("link_acm", acm_function, acm_link, &step_errno) < 0) {
         ok = false; failed_stage = "link_acm"; failed_errno = step_errno;
     }
     if (ok) {
         const int bind_result = j720f_udc_control_write(
-            "bind_udc", udc, "13600000.dwc3", &bind_raw, &bind_errno);
+            "bind_udc", kJ720fUdcPath, "13600000.dwc3", &bind_raw, &bind_errno);
         if (bind_result < 0) {
             ok = false; failed_stage = "bind_udc"; failed_errno = bind_errno;
         }
@@ -417,26 +416,51 @@ static void j720f_run_udc_acm_control(void) {
 
     j720f_init_udc_trace_file("control_after_bind", "udc_state",
                               "/sys/class/udc/13600000.dwc3/state");
-    j720f_init_udc_trace_file("control_after_bind", "acm_udc", udc);
+    j720f_init_udc_trace_file("control_after_bind", "g1_udc", kJ720fUdcPath);
 
-    j720f_init_udc_trace(
-        "J720F_UDC_CONTROL event=summary test=acm result=%d stage=%s errno=%d (%s) bind_raw=%zd bind_errno=%d (%s)",
-        ok ? 0 : -1, ok ? "bind_udc" : failed_stage,
-        ok ? 0 : failed_errno,
-        (ok || failed_errno == 0) ? "ok" : strerror(failed_errno),
-        bind_raw, bind_errno, bind_errno == 0 ? "ok" : strerror(bind_errno));
-
-    // If ACM bound, a newline is the ConfigFS empty-string unbind operation.
-    // Do not leave the control gadget attached after collecting the A/B result.
+    // If ACM bound, write a newline; this kernel's ConfigFS UDC store removes
+    // a trailing newline, making it the empty-string unbind operation.
     if (bind_raw >= 0 && bind_errno == 0) {
         ssize_t unbind_raw = -1;
         int unbind_errno = 0;
-        j720f_udc_control_write("unbind_udc", udc, "\n", &unbind_raw, &unbind_errno);
+        j720f_udc_control_write("unbind_udc", kJ720fUdcPath, "\n",
+                                &unbind_raw, &unbind_errno);
         j720f_init_udc_trace_file("control_after_unbind", "udc_state",
                                   "/sys/class/udc/13600000.dwc3/state");
     }
-    j720f_udc_control_cleanup();
-    j720f_init_udc_trace("J720F_UDC_CONTROL event=end test=acm");
+
+    // Restore the exact pre-test topology regardless of the ACM result.
+    if (unlink(acm_link) < 0 && errno != ENOENT) {
+        j720f_init_udc_trace(
+            "J720F_UDC_CONTROL event=cleanup stage=unlink_acm errno=%d (%s)",
+            errno, strerror(errno));
+    }
+    if (rmdir(acm_function) < 0 && errno != ENOENT) {
+        j720f_init_udc_trace(
+            "J720F_UDC_CONTROL event=cleanup stage=rmdir_acm errno=%d (%s)",
+            errno, strerror(errno));
+    }
+    if (symlink(ffs_function, ffs_link) < 0 && errno != EEXIST) {
+        restore_errno = errno;
+        j720f_init_udc_trace(
+            "J720F_UDC_CONTROL event=cleanup stage=restore_ffs errno=%d (%s)",
+            restore_errno, strerror(restore_errno));
+    }
+
+    j720f_init_udc_trace_link("control_restored", "ffs_adb_link", ffs_link);
+    j720f_init_udc_trace_dir("control_restored", "functions",
+                             "/sys/kernel/config/usb_gadget/g1/functions");
+    j720f_init_udc_trace_dir("control_restored", "config_c1",
+                             "/sys/kernel/config/usb_gadget/g1/configs/c.1");
+
+    j720f_init_udc_trace(
+        "J720F_UDC_CONTROL event=summary test=acm_same_g1 result=%d stage=%s errno=%d (%s) bind_raw=%zd bind_errno=%d (%s) restore_errno=%d (%s)",
+        ok ? 0 : -1, ok ? "bind_udc" : failed_stage,
+        ok ? 0 : failed_errno,
+        (ok || failed_errno == 0) ? "ok" : strerror(failed_errno),
+        bind_raw, bind_errno, bind_errno == 0 ? "ok" : strerror(bind_errno),
+        restore_errno, restore_errno == 0 ? "ok" : strerror(restore_errno));
+    j720f_init_udc_trace("J720F_UDC_CONTROL event=end test=acm_same_g1");
     errno = saved_errno;
 }
 
@@ -513,7 +537,7 @@ def main() -> None:
         "after_sha256": sha256(updated),
         "marker": MARKER,
         "control_marker": CONTROL_MARKER,
-        "control_test": "ConfigFS CDC ACM A/B bind after exact ffs.adb EINVAL",
+        "control_test": "same-g1 ConfigFS CDC ACM A/B bind after exact ffs.adb EINVAL",
         "udc_path": UDC_PATH,
         "trace_path": TRACE_PATH,
     }
