@@ -146,7 +146,7 @@ jobs:
           reject_grep 'legacy /sbin ORS input path remains' -Fq '"/sbin/orsin"' "$ORS_HEADER"
           reject_grep 'legacy /sbin ORS output path remains' -Fq '"/sbin/orsout"' "$ORS_HEADER"
 
-      - name: Instrument native adbd for direct FunctionFS tracing
+      - name: Instrument native adbd and init UDC bind tracing
         shell: bash
         run: |
           set -euxo pipefail
@@ -167,12 +167,16 @@ jobs:
           python3 tools/patch_j720f_adbd_force_ffs.py \
             --system-core "$SYSTEM_CORE" \
             --report "$TRACE_DIR/adbd-force-ffs-patch-report.json"
+          python3 tools/patch_j720f_init_udc_trace.py \
+            --system-core "$SYSTEM_CORE" \
+            --report "$TRACE_DIR/init-udc-trace-patch-report.json"
 
           git -C "$SYSTEM_CORE" diff --check
           git -C "$SYSTEM_CORE" diff -- \
             adb/daemon/main.cpp \
             adb/usb_linux_client.cpp \
             adb/adb_trace.cpp \
+            init/util.cpp \
             > "$TRACE_DIR/system-core-adbd-direct-trace.patch"
           test -s "$TRACE_DIR/system-core-adbd-direct-trace.patch"
 
@@ -182,6 +186,8 @@ jobs:
             "$TRACE_DIR/usb_linux_client.cpp.patched"
           cp "$SYSTEM_CORE/adb/adb_trace.cpp" \
             "$TRACE_DIR/adb_trace.cpp.patched"
+          cp "$SYSTEM_CORE/init/util.cpp" \
+            "$TRACE_DIR/init-util.cpp.patched"
           printf '%s\n' "$SYSTEM_CORE_COMMIT" \
             > "$TRACE_DIR/system-core-commit.txt"
           printf '%s\n' "$SYSTEM_CORE_REPOSITORY" \
@@ -203,6 +209,10 @@ jobs:
             "$SYSTEM_CORE/adb/usb_linux_client.cpp"
           grep -Fq '/tmp/J720F_ADBD_TRACE.txt' \
             "$SYSTEM_CORE/adb/adb_trace.cpp"
+          grep -Fq 'J720F_INIT_UDC' \
+            "$SYSTEM_CORE/init/util.cpp"
+          grep -Fq '/sys/kernel/config/usb_gadget/g1/UDC' \
+            "$SYSTEM_CORE/init/util.cpp"
           if grep -Fq '/data/adb/adb-' "$SYSTEM_CORE/adb/adb_trace.cpp"; then
             echo 'Old /data ADB trace path remains after instrumentation' >&2
             exit 1
@@ -575,6 +585,7 @@ jobs:
           grep -aFq 'event=v2_descriptor_write' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"
           reject_grep 'instrumented adbd still embeds /data ADB trace path' -aFq '/data/adb/adb-' "$OUT/recovery/root/sbin/adbd"
           test ! -e "$OUT/recovery/root/system/bin/adbd"
           test ! -e "$OUT/recovery/root/system/bin/linker64"
@@ -620,7 +631,7 @@ jobs:
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
             echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
-            echo 'diagnostic=Samsung stock-order persistent ffs.adb registration before FunctionFS mount and UDC bind after ffs.ready'
+            echo 'diagnostic=init-side UDC open/write errno and immediate ConfigFS/DWC3/android_usb state tracing with USB behavior unchanged'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -666,6 +677,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 stock-order ConfigFS diagnostic ${{ github.run_id }}" \
-            --notes "Diagnostic/fix build: the ffs.adb function is registered with c.1 during fs, before FunctionFS is mounted, matching the exact CUL1 Samsung recovery order. The link is preserved across the none-to-adb transition and the UDC is bound only after native adbd publishes ffs.ready. Working targeted /data access and direct tracing are retained. MTP remains excluded. Not a stable community release." \
+            --title "J720F TWRP 3.3 init-side UDC diagnostic ${{ github.run_id }}" \
+            --notes "Diagnostic build: USB behavior is unchanged. PID 1 now records the exact g1/UDC open/write result and errno plus immediate ConfigFS, DWC3 and Samsung android_usb state around the bind attempt into the existing direct trace. Working /data and native FunctionFS adbd are retained. MTP remains excluded. Not a stable community release." \
             --prerelease
