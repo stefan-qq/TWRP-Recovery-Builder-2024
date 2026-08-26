@@ -167,6 +167,9 @@ jobs:
           python3 tools/patch_j720f_adbd_force_ffs.py \
             --system-core "$SYSTEM_CORE" \
             --report "$TRACE_DIR/adbd-force-ffs-patch-report.json"
+          python3 tools/patch_j720f_adbd_recovery_shell.py \
+            --system-core "$SYSTEM_CORE" \
+            --report "$TRACE_DIR/adbd-recovery-shell-patch-report.json"
           python3 tools/patch_j720f_init_udc_trace.py \
             --system-core "$SYSTEM_CORE" \
             --report "$TRACE_DIR/init-udc-trace-patch-report.json"
@@ -176,6 +179,7 @@ jobs:
             adb/daemon/main.cpp \
             adb/usb_linux_client.cpp \
             adb/adb_trace.cpp \
+            adb/shell_service.cpp \
             init/util.cpp \
             > "$TRACE_DIR/system-core-adbd-direct-trace.patch"
           test -s "$TRACE_DIR/system-core-adbd-direct-trace.patch"
@@ -186,6 +190,8 @@ jobs:
             "$TRACE_DIR/usb_linux_client.cpp.patched"
           cp "$SYSTEM_CORE/adb/adb_trace.cpp" \
             "$TRACE_DIR/adb_trace.cpp.patched"
+          cp "$SYSTEM_CORE/adb/shell_service.cpp" \
+            "$TRACE_DIR/shell_service.cpp.patched"
           cp "$SYSTEM_CORE/init/util.cpp" \
             "$TRACE_DIR/init-util.cpp.patched"
           printf '%s\n' "$SYSTEM_CORE_COMMIT" \
@@ -209,6 +215,10 @@ jobs:
             "$SYSTEM_CORE/adb/usb_linux_client.cpp"
           grep -Fq '/tmp/J720F_ADBD_TRACE.txt' \
             "$SYSTEM_CORE/adb/adb_trace.cpp"
+          grep -Fq 'J720F_RECOVERY_SHELL_SELCON' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'selinux_android_setcon("u:r:shell:s0")' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'J720F_INIT_UDC' \
             "$SYSTEM_CORE/init/util.cpp"
           grep -Fq 'J720F_UDC_CONTROL' \
@@ -360,6 +370,11 @@ jobs:
           grep -q 'allow adbd functionfs:file rw_file_perms;' sepolicy/adbd.te
           grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
           grep -q 'get_prop(adbd, twrp_prop)' sepolicy/adbd.te
+          grep -q 'allow adbd self:process setcurrent;' sepolicy/adbd.te
+          grep -q 'domain_trans(adbd, rootfs, shell)' sepolicy/adbd.te
+          grep -q 'allow adbd shell:process dyntransition;' sepolicy/adbd.te
+          grep -q 'allow shell adbd:fd use;' sepolicy/adbd.te
+          grep -q 'allow shell adbd:unix_stream_socket' sepolicy/adbd.te
           reject_grep 'adbd still has generic tmpfs write access' -q 'allow adbd tmpfs:' sepolicy/adbd.te
           grep -q 'type j720f_adbd_trace_file, file_type;' sepolicy/j720f_trace.te
           grep -q 'allow adbd j720f_adbd_trace_file:file create_file_perms;' sepolicy/j720f_trace.te
@@ -615,6 +630,7 @@ jobs:
           grep -aFq 'event=v2_descriptor_write' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_RECOVERY_SHELL_SELCON' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"
           grep -aFq 'J720F_UDC_CONTROL' "$OUT/recovery/root/init"
           grep -aFq 'J720F_UEVENT_SELECTOR' "$OUT/recovery/root/init"
