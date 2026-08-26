@@ -146,12 +146,13 @@ jobs:
           reject_grep 'legacy /sbin ORS input path remains' -Fq '"/sbin/orsin"' "$ORS_HEADER"
           reject_grep 'legacy /sbin ORS output path remains' -Fq '"/sbin/orsout"' "$ORS_HEADER"
 
-      - name: Instrument native adbd and init UDC bind tracing
+      - name: Instrument native adbd, linker and init tracing
         shell: bash
         run: |
           set -euxo pipefail
           TRACE_DIR=workspace/j720f-build-diagnostics
           SYSTEM_CORE=workspace/system/core
+          BIONIC=workspace/bionic
           mkdir -p "$TRACE_DIR"
 
           SYSTEM_CORE_COMMIT="$(git -C "$SYSTEM_CORE" rev-parse HEAD)"
@@ -160,6 +161,13 @@ jobs:
           SYSTEM_CORE_REPOSITORY="$(git -C "$SYSTEM_CORE" remote get-url "$SYSTEM_CORE_REMOTE_NAME")"
           echo "SYSTEM_CORE_COMMIT=$SYSTEM_CORE_COMMIT" >> "$GITHUB_ENV"
           echo "SYSTEM_CORE_REPOSITORY=$SYSTEM_CORE_REPOSITORY" >> "$GITHUB_ENV"
+
+          BIONIC_COMMIT="$(git -C "$BIONIC" rev-parse HEAD)"
+          BIONIC_REMOTE_NAME="$(git -C "$BIONIC" remote | head -n 1)"
+          test -n "$BIONIC_REMOTE_NAME"
+          BIONIC_REPOSITORY="$(git -C "$BIONIC" remote get-url "$BIONIC_REMOTE_NAME")"
+          echo "BIONIC_COMMIT=$BIONIC_COMMIT" >> "$GITHUB_ENV"
+          echo "BIONIC_REPOSITORY=$BIONIC_REPOSITORY" >> "$GITHUB_ENV"
 
           python3 tools/patch_j720f_adbd_usb_trace.py \
             --system-core "$SYSTEM_CORE" \
@@ -170,11 +178,15 @@ jobs:
           python3 tools/patch_j720f_adbd_recovery_shell.py \
             --system-core "$SYSTEM_CORE" \
             --report "$TRACE_DIR/adbd-recovery-shell-patch-report.json"
+          python3 tools/patch_j720f_linker_diag.py \
+            --bionic "$BIONIC" \
+            --report "$TRACE_DIR/linker-diag-patch-report.json"
           python3 tools/patch_j720f_init_udc_trace.py \
             --system-core "$SYSTEM_CORE" \
             --report "$TRACE_DIR/init-udc-trace-patch-report.json"
 
           git -C "$SYSTEM_CORE" diff --check
+          git -C "$BIONIC" diff --check
           git -C "$SYSTEM_CORE" diff -- \
             adb/daemon/main.cpp \
             adb/usb_linux_client.cpp \
@@ -183,6 +195,9 @@ jobs:
             init/util.cpp \
             > "$TRACE_DIR/system-core-adbd-direct-trace.patch"
           test -s "$TRACE_DIR/system-core-adbd-direct-trace.patch"
+          git -C "$BIONIC" diff -- linker/linker.cpp \
+            > "$TRACE_DIR/bionic-linker-diag.patch"
+          test -s "$TRACE_DIR/bionic-linker-diag.patch"
 
           cp "$SYSTEM_CORE/adb/daemon/main.cpp" \
             "$TRACE_DIR/adbd-main.cpp.patched"
@@ -194,10 +209,16 @@ jobs:
             "$TRACE_DIR/shell_service.cpp.patched"
           cp "$SYSTEM_CORE/init/util.cpp" \
             "$TRACE_DIR/init-util.cpp.patched"
+          cp "$BIONIC/linker/linker.cpp" \
+            "$TRACE_DIR/linker.cpp.patched"
           printf '%s\n' "$SYSTEM_CORE_COMMIT" \
             > "$TRACE_DIR/system-core-commit.txt"
           printf '%s\n' "$SYSTEM_CORE_REPOSITORY" \
             > "$TRACE_DIR/system-core-repository.txt"
+          printf '%s\n' "$BIONIC_COMMIT" \
+            > "$TRACE_DIR/bionic-commit.txt"
+          printf '%s\n' "$BIONIC_REPOSITORY" \
+            > "$TRACE_DIR/bionic-repository.txt"
 
           grep -Fq 'J720F_MAIN_USB_GATE' \
             "$SYSTEM_CORE/adb/daemon/main.cpp"
@@ -219,6 +240,12 @@ jobs:
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'selinux_android_setcon("u:r:shell:s0")' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'J720F_LINKER_DIAG' \
+            "$BIONIC/linker/linker.cpp"
+          grep -Fq 'j720f_at_secure' \
+            "$BIONIC/linker/linker.cpp"
+          grep -Fq 'libc_mmap_exec' \
+            "$BIONIC/linker/linker.cpp"
           grep -Fq 'J720F_INIT_UDC' \
             "$SYSTEM_CORE/init/util.cpp"
           grep -Fq 'J720F_UDC_CONTROL' \
@@ -631,6 +658,7 @@ jobs:
           grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_RECOVERY_SHELL_SELCON' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_LINKER_DIAG' "$OUT/recovery/root/sbin/linker64"
           grep -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"
           grep -aFq 'J720F_UDC_CONTROL' "$OUT/recovery/root/init"
           grep -aFq 'J720F_UEVENT_SELECTOR' "$OUT/recovery/root/init"
@@ -681,12 +709,14 @@ jobs:
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
             echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
-            echo 'diagnostic=init-side Samsung CONFIG_USB_CONFIGFS_UEVENT selector trace/fallback plus UDC errno tracing and same-g1 ACM fallback control'
+            echo 'diagnostic=working USB/ADB transport plus recovery shell linker AT_SECURE and rootfs libc access trace'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
             echo "system_core_repository=$SYSTEM_CORE_REPOSITORY"
             echo "system_core_commit=$SYSTEM_CORE_COMMIT"
+            echo "bionic_repository=$BIONIC_REPOSITORY"
+            echo "bionic_commit=$BIONIC_COMMIT"
             echo "device_tree=${{ inputs.DEVICE_TREE }}"
             echo "device_tree_branch=${{ inputs.DEVICE_TREE_BRANCH }}"
             echo "device_tree_commit=$DEVICE_TREE_COMMIT"
