@@ -412,10 +412,15 @@ jobs:
           grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
           grep -q 'get_prop(adbd, twrp_prop)' sepolicy/adbd.te
           grep -q 'allow adbd self:process setcurrent;' sepolicy/adbd.te
-          grep -q 'domain_trans(adbd, rootfs, shell)' sepolicy/adbd.te
-          grep -q 'allow adbd shell:process dyntransition;' sepolicy/adbd.te
-          grep -q 'allow shell adbd:fd use;' sepolicy/adbd.te
-          grep -q 'allow shell adbd:unix_stream_socket' sepolicy/adbd.te
+          grep -q 'allow adbd recovery:process { dyntransition signal };' sepolicy/adbd.te
+          grep -q 'allow recovery adbd:fd use;' sepolicy/adbd.te
+          grep -q 'allow recovery adbd:unix_stream_socket { read write ioctl getattr };' sepolicy/adbd.te
+          reject_grep 'superseded adbd shell domain transition remains' -q 'domain_trans(adbd, rootfs, shell)' sepolicy/adbd.te
+          reject_grep 'superseded adbd shell dyntransition remains' -q 'allow adbd shell:process dyntransition;' sepolicy/adbd.te
+          reject_grep 'superseded adbd shell noatsecure remains' -q 'allow adbd shell:process noatsecure;' sepolicy/adbd.te
+          reject_grep 'superseded shell rootfs execute rule remains' -q 'allow shell rootfs:file rx_file_perms;' sepolicy/adbd.te
+          reject_grep 'superseded shell inherited fd rule remains' -q 'allow shell adbd:fd use;' sepolicy/adbd.te
+          reject_grep 'superseded shell inherited socket rule remains' -q 'allow shell adbd:unix_stream_socket' sepolicy/adbd.te
           reject_grep 'adbd still has generic tmpfs write access' -q 'allow adbd tmpfs:' sepolicy/adbd.te
           grep -q 'type j720f_adbd_trace_file, file_type;' sepolicy/j720f_trace.te
           grep -q 'allow adbd j720f_adbd_trace_file:file create_file_perms;' sepolicy/j720f_trace.te
