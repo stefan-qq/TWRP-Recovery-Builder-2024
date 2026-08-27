@@ -246,6 +246,12 @@ jobs:
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'J720F_LINKER_DIAG' \
             "$BIONIC/linker/linker.cpp"
+          grep -Fq 'J720F_LINKER_CRED phase=' \
+            "$BIONIC/linker/linker.cpp"
+          grep -Fq 'after_main_thread' \
+            "$BIONIC/linker/linker.cpp"
+          grep -Fq 'aux_uid=' \
+            "$BIONIC/linker/linker.cpp"
           grep -Fq 'j720f_at_secure' \
             "$BIONIC/linker/linker.cpp"
           grep -Fq 'libc_mmap_exec' \
@@ -664,6 +670,7 @@ jobs:
           grep -aFq 'J720F_RECOVERY_SHELL_SELCON' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_SHELL_CHILD' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_LINKER_DIAG' "$OUT/recovery/root/sbin/linker64"
+          grep -aFq 'J720F_LINKER_CRED' "$OUT/recovery/root/sbin/linker64"
           grep -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"
           grep -aFq 'J720F_UDC_CONTROL' "$OUT/recovery/root/init"
           grep -aFq 'J720F_UEVENT_SELECTOR' "$OUT/recovery/root/init"
