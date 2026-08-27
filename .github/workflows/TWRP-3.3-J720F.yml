@@ -242,7 +242,11 @@ jobs:
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'J720F_SHELL_CHILD phase=post_setcon' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'selinux_android_setcon("u:r:shell:s0")' \
+          grep -Fq 'J720F_SHELL_CHILD phase=pre_exec' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'env["LD_LIBRARY_PATH"] = "/sbin"' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'selinux_android_setcon("u:r:recovery:s0")' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'J720F_LINKER_DIAG' \
             "$BIONIC/linker/linker.cpp"

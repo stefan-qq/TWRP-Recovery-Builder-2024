@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Add the recovery rootfs -> shell SELinux handoff to Android 7.1 adbd.
+"""Run the Android 7.1 adbd command child in the recovery SELinux domain.
 
-The pinned donor adbd predates AOSP's recovery-specific shell subprocess
-setcon(). In this recovery /sbin/sh is rootfs-labelled, so a child left in the
-adbd domain reaches execle() but receives EACCES under enforcing SELinux.
+The Samsung CUL1 kernel presents an exec from u:r:shell:s0 to linker64 with
+UID/GID 2000 even though the root adbd child is UID/GID 0 immediately before
+exec. Recovery /sbin is intentionally root-owned 0750, so that exec-time
+credential change prevents linker64 from opening /sbin/libc.so.
 
-Patch only shell_service.cpp and fail closed if the exact donor anchors move.
+Keep the adbd parent in u:r:adbd:s0, move only the forked command child to the
+already-proven u:r:recovery:s0 domain, and pass the recovery /sbin runtime paths
+explicitly in the child's exec environment. Fail closed if donor anchors move.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from pathlib import Path
 
 MARKER = "J720F_RECOVERY_SHELL_SELCON"
 CHILD_MARKER = "J720F_SHELL_CHILD"
-TARGET_CONTEXT = "u:r:shell:s0"
+TARGET_CONTEXT = "u:r:recovery:s0"
 
 
 def sha256(text: str) -> str:
@@ -37,6 +40,7 @@ def patch_shell_service(text: str) -> str:
 
     for anchor in (
         '#include <log/log.h>',
+        'std::vector<std::string> joined_env;',
         'std::string shell_command;',
         'execle(shell_command.c_str(), shell_command.c_str(), "-", nullptr, cenv.data());',
         'execle(shell_command.c_str(), shell_command.c_str(), "-c", command_.c_str(), nullptr, cenv.data());',
@@ -51,9 +55,87 @@ def patch_shell_service(text: str) -> str:
         "libselinux include",
     )
 
+    text = replace_once(
+        text,
+        '    std::vector<std::string> joined_env;\n',
+        '''    // Recovery executables and their shared libraries live in /sbin.
+    // adbd's live C environ does not retain init's LD_LIBRARY_PATH even though
+    // /proc/self/environ still exposes the original process-start environment.
+    // Pass the runtime paths explicitly to the exec child.
+    env["PATH"] = "/sbin:/system/bin";
+    env["LD_LIBRARY_PATH"] = "/sbin";
+
+    std::vector<std::string> joined_env;
+''',
+        "recovery child environment",
+    )
+
     old = '''        std::string shell_command;\n'''
-    new = '''        // Recovery rootfs binaries, including /sbin/sh, are labelled rootfs.\n        // Newer AOSP recovery adbd explicitly moves only the forked shell child\n        // from adbd to shell before exec. Keep the parent adbd in u:r:adbd:s0\n        // so the proven FunctionFS transport and sync service are unchanged.\n        // Diagnostic only: capture the forked child's actual credentials and\n        // exact LD_LIBRARY_PATH passed to exec before and after setcon().\n        const char* j720f_child_ld = "<absent>";\n        for (const char* item : cenv) {\n            if (item != nullptr && strncmp(item, "LD_LIBRARY_PATH=", 16) == 0) {\n                j720f_child_ld = item + 16;\n                break;\n            }\n        }\n        char j720f_child_diag[512];\n        snprintf(j720f_child_diag, sizeof(j720f_child_diag),\n                 "J720F_SHELL_CHILD phase=pre_setcon uid=%d euid=%d gid=%d egid=%d cenv_ld=%s\\n",\n                 static_cast<int>(getuid()), static_cast<int>(geteuid()),\n                 static_cast<int>(getgid()), static_cast<int>(getegid()),\n                 j720f_child_ld);\n        WriteFdExactly(STDERR_FILENO, j720f_child_diag);\n\n        errno = 0;\n        if (selinux_android_setcon("u:r:shell:s0") < 0) {\n            const int saved_errno = errno;\n            WriteFdExactly(child_error_sfd.fd(),\n                           "J720F_RECOVERY_SHELL_SELCON failed: " );\n            WriteFdExactly(child_error_sfd.fd(), strerror(saved_errno));\n            child_error_sfd.Reset();\n            _Exit(1);\n        }\n\n        struct stat j720f_sbin_st;\n        const int j720f_sbin_stat = stat("/sbin", &j720f_sbin_st);\n        errno = 0;\n        const int j720f_libc_access = access("/sbin/libc.so", R_OK);\n        const int j720f_libc_errno = j720f_libc_access == 0 ? 0 : errno;\n        snprintf(j720f_child_diag, sizeof(j720f_child_diag),\n                 "J720F_SHELL_CHILD phase=post_setcon uid=%d euid=%d gid=%d egid=%d cenv_ld=%s "\n                 "sbin_stat=%d sbin_mode=%04o sbin_uid=%d sbin_gid=%d libc_access=%d libc_errno=%d\\n",\n                 static_cast<int>(getuid()), static_cast<int>(geteuid()),\n                 static_cast<int>(getgid()), static_cast<int>(getegid()),\n                 j720f_child_ld, j720f_sbin_stat,\n                 j720f_sbin_stat == 0 ? static_cast<unsigned int>(j720f_sbin_st.st_mode & 07777) : 0,\n                 j720f_sbin_stat == 0 ? static_cast<int>(j720f_sbin_st.st_uid) : -1,\n                 j720f_sbin_stat == 0 ? static_cast<int>(j720f_sbin_st.st_gid) : -1,\n                 j720f_libc_access, j720f_libc_errno);\n        WriteFdExactly(STDERR_FILENO, j720f_child_diag);\n\n        std::string shell_command;\n'''
+    new = '''        // Keep the parent adbd in u:r:adbd:s0 so the proven FunctionFS
+        // transport and sync service are unchanged. On this Samsung kernel an
+        // exec from u:r:shell:s0 is presented to linker64 as UID/GID 2000 even
+        // though this child is UID/GID 0 immediately before exec. TWRP /sbin is
+        // root-owned 0750, so run only the command child in recovery domain.
+        const char* j720f_child_ld = "<absent>";
+        for (const char* item : cenv) {
+            if (item != nullptr && strncmp(item, "LD_LIBRARY_PATH=", 16) == 0) {
+                j720f_child_ld = item + 16;
+                break;
+            }
+        }
+        char j720f_child_diag[640];
+        snprintf(j720f_child_diag, sizeof(j720f_child_diag),
+                 "J720F_SHELL_CHILD phase=pre_setcon uid=%d euid=%d gid=%d egid=%d cenv_ld=%s\\n",
+                 static_cast<int>(getuid()), static_cast<int>(geteuid()),
+                 static_cast<int>(getgid()), static_cast<int>(getegid()),
+                 j720f_child_ld);
+        WriteFdExactly(STDERR_FILENO, j720f_child_diag);
+
+        errno = 0;
+        if (selinux_android_setcon("u:r:recovery:s0") < 0) {
+            const int saved_errno = errno;
+            WriteFdExactly(child_error_sfd.fd(),
+                           "J720F_RECOVERY_SHELL_SELCON failed: " );
+            WriteFdExactly(child_error_sfd.fd(), strerror(saved_errno));
+            child_error_sfd.Reset();
+            _Exit(1);
+        }
+
+        struct stat j720f_sbin_st;
+        const int j720f_sbin_stat = stat("/sbin", &j720f_sbin_st);
+        errno = 0;
+        const int j720f_libc_access = access("/sbin/libc.so", R_OK);
+        const int j720f_libc_errno = j720f_libc_access == 0 ? 0 : errno;
+        snprintf(j720f_child_diag, sizeof(j720f_child_diag),
+                 "J720F_SHELL_CHILD phase=post_setcon uid=%d euid=%d gid=%d egid=%d cenv_ld=%s "
+                 "sbin_stat=%d sbin_mode=%04o sbin_uid=%d sbin_gid=%d libc_access=%d libc_errno=%d\\n",
+                 static_cast<int>(getuid()), static_cast<int>(geteuid()),
+                 static_cast<int>(getgid()), static_cast<int>(getegid()),
+                 j720f_child_ld, j720f_sbin_stat,
+                 j720f_sbin_stat == 0 ? static_cast<unsigned int>(j720f_sbin_st.st_mode & 07777) : 0,
+                 j720f_sbin_stat == 0 ? static_cast<int>(j720f_sbin_st.st_uid) : -1,
+                 j720f_sbin_stat == 0 ? static_cast<int>(j720f_sbin_st.st_gid) : -1,
+                 j720f_libc_access, j720f_libc_errno);
+        WriteFdExactly(STDERR_FILENO, j720f_child_diag);
+
+        std::string shell_command;
+'''
     text = replace_once(text, old, new, "recovery shell setcon")
+
+    old_exec = '''        if (command_.empty()) {
+            execle(shell_command.c_str(), shell_command.c_str(), "-", nullptr, cenv.data());
+'''
+    new_exec = '''        snprintf(j720f_child_diag, sizeof(j720f_child_diag),
+                 "J720F_SHELL_CHILD phase=pre_exec uid=%d euid=%d gid=%d egid=%d cenv_ld=%s shell=%s\\n",
+                 static_cast<int>(getuid()), static_cast<int>(geteuid()),
+                 static_cast<int>(getgid()), static_cast<int>(getegid()),
+                 j720f_child_ld, shell_command.c_str());
+        WriteFdExactly(STDERR_FILENO, j720f_child_diag);
+
+        if (command_.empty()) {
+            execle(shell_command.c_str(), shell_command.c_str(), "-", nullptr, cenv.data());
+'''
+    text = replace_once(text, old_exec, new_exec, "pre-exec credential trace")
     return text
 
 
@@ -79,6 +161,7 @@ def main() -> int:
         "target_context": TARGET_CONTEXT,
         "required_marker": MARKER,
         "child_diag_marker": CHILD_MARKER,
+        "explicit_ld_library_path": "/sbin",
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")
