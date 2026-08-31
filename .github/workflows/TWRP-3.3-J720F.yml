@@ -641,8 +641,6 @@ jobs:
           grep -q '^allow adbd twrp_prop:file ' "$POLICY_CONF"
           grep -q '^allow adbd self:process setcurrent;' "$POLICY_CONF"
           grep -q '^allow adbd su:process dyntransition;' "$POLICY_CONF"
-          grep -q '^permissive su;' "$POLICY_CONF"
-          echo 'Verified stock recovery root-adbd su domain is available and permissive'
           if grep -E '^allow adbd tmpfs:.*[[:space:]{}](create|write|append|setattr|unlink|rename|add_name|remove_name|reparent|rmdir|relabelfrom|relabelto|execute|execute_no_trans|entrypoint|mounton)([[:space:]{};]|$)' "$POLICY_CONF"; then
             echo 'Rejected: compiled policy grants generic adbd tmpfs write or execute access' >&2
             exit 1
@@ -659,6 +657,11 @@ jobs:
           reject_grep 'compiled policy still lets su set ffs_prop' -q '^allow su ffs_prop:property_service set;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
+          if ! grep -Fxq 'su' "$OUT/sepolicy-permissive-domains.txt"; then
+            echo 'Compiled recovery policy does not make the stock root-adbd su domain permissive' >&2
+            exit 1
+          fi
+          echo 'Verified compiled stock recovery root-adbd su domain is permissive'
           if grep -Eq '^init$' "$OUT/sepolicy-permissive-domains.txt"; then
             echo 'init unexpectedly permissive' >&2
             exit 1
