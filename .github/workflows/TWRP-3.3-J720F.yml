@@ -685,9 +685,12 @@ jobs:
           grep -aFq 'event=v2_descriptor_write' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F_STOCK_ROOT_SECLABEL_CHILD' "$OUT/recovery/root/sbin/adbd"
+          # J720F_STOCK_ROOT_SECLABEL_CHILD is a source-only comment marker and
+          # is intentionally not expected to survive compilation. Validate the
+          # executable runtime diagnostics that prove this path was compiled.
+          grep -aFq 'J720F_SHELL_CHILD phase=inherited_root_seclabel' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_SHELL_CHILD phase=pre_exec' "$OUT/recovery/root/sbin/adbd"
           grep -Fq 'service adbd /sbin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery' "$OUT/recovery/root/init.rc"
-          grep -aFq 'J720F_SHELL_CHILD' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_LINKER_DIAG' "$OUT/recovery/root/sbin/linker64"
           grep -aFq 'J720F_LINKER_CRED' "$OUT/recovery/root/sbin/linker64"
           grep -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"
