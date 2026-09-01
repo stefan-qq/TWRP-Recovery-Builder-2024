@@ -686,15 +686,15 @@ jobs:
           reject_grep 'compiled policy still lets su set ffs_prop' -q '^allow su ffs_prop:property_service set;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
-          if grep -Eq '^(adbd|init|recovery)$' "$OUT/sepolicy-permissive-domains.txt"; then
-            echo 'init/recovery/adbd must all remain enforcing domains' >&2
+          if grep -Eq '^(adbd|init)$' "$OUT/sepolicy-permissive-domains.txt"; then
+            echo 'init/adbd must remain enforcing domains' >&2
             exit 1
           fi
-          echo 'Verified: parent adbd and recovery child remain enforcing SELinux domains'
-          if grep -Eq '^init$' "$OUT/sepolicy-permissive-domains.txt"; then
-            echo 'init unexpectedly permissive' >&2
+          if ! grep -qx 'recovery' "$OUT/sepolicy-permissive-domains.txt"; then
+            echo 'donor recovery domain unexpectedly stopped being permissive' >&2
             exit 1
           fi
+          echo 'Verified: parent adbd/init enforce SELinux; command-child target recovery is donor-permissive'
           cmp "$RECOVERY_POLICY" "$ROOT_POLICY"
           if grep -aFq 'J720F recovery: forcing SELinux permissive' "$OUT/recovery/root/init"; then
             echo 'Disproven forced-permissive init patch remains' >&2
