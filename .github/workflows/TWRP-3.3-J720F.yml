@@ -236,9 +236,13 @@ jobs:
             "$SYSTEM_CORE/adb/usb_linux_client.cpp"
           grep -Fq '/tmp/J720F_ADBD_TRACE.txt' \
             "$SYSTEM_CORE/adb/adb_trace.cpp"
-          grep -Fq 'J720F_STOCK_ROOT_SECLABEL_CHILD' \
+          grep -Fq 'J720F_CHILD_SU_HANDOFF' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'J720F_SHELL_CHILD phase=inherited_root_seclabel' \
+          grep -Fq 'J720F_SHELL_CHILD phase=pre_setcon_su' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'J720F_SHELL_CHILD phase=post_setcon_su' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'selinux_android_setcon("u:r:su:s0")' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'J720F_SHELL_CHILD phase=pre_exec' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
@@ -414,6 +418,8 @@ jobs:
           grep -q 'get_prop(adbd, twrp_prop)' sepolicy/adbd.te
           grep -q 'allow adbd self:process setcurrent;' sepolicy/adbd.te
           grep -q 'allow adbd su:process dyntransition;' sepolicy/adbd.te
+          grep -q 'allow su adbd:fd use;' sepolicy/adbd.te
+          grep -q 'allow su adbd:unix_stream_socket { read write ioctl getattr };' sepolicy/adbd.te
           reject_grep 'superseded adbd recovery dyntransition remains' -q 'allow adbd recovery:process' sepolicy/adbd.te
           reject_grep 'superseded recovery inherited adbd fd rule remains' -q 'allow recovery adbd:fd use;' sepolicy/adbd.te
           reject_grep 'superseded recovery inherited adbd socket rule remains' -q 'allow recovery adbd:unix_stream_socket' sepolicy/adbd.te
@@ -450,8 +456,8 @@ jobs:
           reject_grep 'legacy adb root restart trigger remains' -q 'on property:service.adb.root=1' recovery/root/init.rc
           reject_grep 'generic debuggable trigger can still start adbd early' -q 'on property:ro.debuggable=1' recovery/root/init.rc
           reject_grep 'generic init.rc can still enable android_usb' -q 'write /sys/class/android_usb/android0/enable 1' recovery/root/init.rc
-          grep -q 'service adbd /sbin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery' recovery/root/init.rc
-          test "$(grep -Ec '^[[:space:]]*service[[:space:]]+adbd[[:space:]].*--root_seclabel=' recovery/root/init.rc)" -eq 1
+          grep -q 'service adbd /sbin/adbd --device_banner=recovery' recovery/root/init.rc
+          reject_grep 'whole-daemon root_seclabel remains' -Eq '^[[:space:]]*service[[:space:]]+adbd[[:space:]].*--root_seclabel=' recovery/root/init.rc
           reject_grep 'Android 10 adbd library path remains' -q 'setenv LD_LIBRARY_PATH /system/lib64' recovery/root/init.rc
           grep -q 'setprop j720f.usb.native_prepare 1' recovery/root/init.rc
 
@@ -641,6 +647,8 @@ jobs:
           grep -q '^allow adbd twrp_prop:file ' "$POLICY_CONF"
           grep -q '^allow adbd self:process setcurrent;' "$POLICY_CONF"
           grep -q '^allow adbd su:process dyntransition;' "$POLICY_CONF"
+          grep -q '^allow su adbd:fd use;' "$POLICY_CONF"
+          grep -q '^allow su adbd:unix_stream_socket ' "$POLICY_CONF"
           if grep -E '^allow adbd tmpfs:.*[[:space:]{}](create|write|append|setattr|unlink|rename|add_name|remove_name|reparent|rmdir|relabelfrom|relabelto|execute|execute_no_trans|entrypoint|mounton)([[:space:]{};]|$)' "$POLICY_CONF"; then
             echo 'Rejected: compiled policy grants generic adbd tmpfs write or execute access' >&2
             exit 1
@@ -658,10 +666,10 @@ jobs:
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
           if ! grep -Fxq 'su' "$OUT/sepolicy-permissive-domains.txt"; then
-            echo 'Compiled recovery policy does not make the stock root-adbd su domain permissive' >&2
+            echo 'Compiled recovery policy does not make the adb command-child su domain permissive' >&2
             exit 1
           fi
-          echo 'Verified compiled stock recovery root-adbd su domain is permissive'
+          echo 'Verified compiled adb command-child su domain is permissive'
           if grep -Eq '^init$' "$OUT/sepolicy-permissive-domains.txt"; then
             echo 'init unexpectedly permissive' >&2
             exit 1
@@ -685,12 +693,12 @@ jobs:
           grep -aFq 'event=v2_descriptor_write' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
-          # J720F_STOCK_ROOT_SECLABEL_CHILD is a source-only comment marker and
-          # is intentionally not expected to survive compilation. Validate the
-          # executable runtime diagnostics that prove this path was compiled.
-          grep -aFq 'J720F_SHELL_CHILD phase=inherited_root_seclabel' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_SHELL_CHILD phase=pre_setcon_su' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_SHELL_CHILD phase=post_setcon_su' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_SHELL_CHILD phase=pre_exec' "$OUT/recovery/root/sbin/adbd"
-          grep -Fq 'service adbd /sbin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery' "$OUT/recovery/root/init.rc"
+          grep -aFq 'J720F_CHILD_SU_SELCON failed' "$OUT/recovery/root/sbin/adbd"
+          grep -Fq 'service adbd /sbin/adbd --device_banner=recovery' "$OUT/recovery/root/init.rc"
+          reject_grep 'built ramdisk still moves whole adbd daemon to root_seclabel' -Eq '^[[:space:]]*service[[:space:]]+adbd[[:space:]].*--root_seclabel=' "$OUT/recovery/root/init.rc"
           grep -aFq 'J720F_LINKER_DIAG' "$OUT/recovery/root/sbin/linker64"
           grep -aFq 'J720F_LINKER_CRED' "$OUT/recovery/root/sbin/linker64"
           grep -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"

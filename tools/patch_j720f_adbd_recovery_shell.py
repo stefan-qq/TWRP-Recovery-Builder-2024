@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
-"""Keep the Android 7.1 adb command child in stock recovery's root su domain.
+"""Move only the Android 7.1 adb command child into Samsung's root su domain.
 
-Samsung CUL1 stock recovery starts adbd as u:r:adbd:s0 with
---root_seclabel=u:r:su:s0. The pinned Android 7.1 adbd already implements that
-option: after it decides to remain UID 0, the *parent adbd process* setcon()s to
-the supplied root label before USB initialization and before serving commands.
+Keep the parent adbd process in the already-proven u:r:adbd:s0 domain so
+FunctionFS setup, sys.usb.ffs.ready publication, and USB transport behavior are
+unchanged. The forked command child remains UID/GID 0, switches to u:r:su:s0
+immediately before exec, and receives explicit recovery /sbin runtime paths.
 
-Earlier J720F experiments instead moved each command child into shell/recovery
-immediately before exec. Hardware tracing proved that the Samsung kernel then
-presents the new ELF image as UID/GID 2000 even though the child is UID/GID 0
-at the execle() boundary. Reproduce the stock recovery architecture instead:
-leave the forked child in the root adbd domain it inherits (expected u:r:su:s0)
-and only make the recovery /sbin runtime environment explicit.
-
-This patch is intentionally diagnostic-friendly: it records the inherited
-credentials/context and /sbin readability immediately before exec, but it does
-not call setcon() in the command child. Fail closed if donor anchors move.
+This is a narrow A/B test of the remaining Samsung exec-time credential issue:
+previous shell/recovery-domain children reached exec as UID 0 but the kernel
+presented linker64 with UID/GID 2000. CUL1 stock recovery uses u:r:su:s0 as the
+root-adbd context, so test that context only in the command child without moving
+the USB daemon itself. Fail closed if donor anchors move.
 """
 
 from __future__ import annotations
@@ -25,9 +20,9 @@ import hashlib
 import json
 from pathlib import Path
 
-MARKER = "J720F_STOCK_ROOT_SECLABEL_CHILD"
+MARKER = "J720F_CHILD_SU_HANDOFF"
 CHILD_MARKER = "J720F_SHELL_CHILD"
-EXPECTED_CONTEXT = "u:r:su:s0"
+TARGET_CONTEXT = "u:r:su:s0"
 
 
 def sha256(text: str) -> str:
@@ -43,7 +38,7 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 def patch_shell_service(text: str) -> str:
     if MARKER in text:
-        raise RuntimeError("shell_service.cpp is already stock-root-seclabel patched")
+        raise RuntimeError("shell_service.cpp is already child-su patched")
 
     for anchor in (
         '#include <log/log.h>',
@@ -58,7 +53,7 @@ def patch_shell_service(text: str) -> str:
     text = replace_once(
         text,
         '#include <log/log.h>\n',
-        '#include <log/log.h>\n#include <stdio.h>\n#include <selinux/selinux.h>\n',
+        '#include <log/log.h>\n#include <stdio.h>\n#include <selinux/android.h>\n#include <selinux/selinux.h>\n',
         "libselinux include",
     )
 
@@ -78,10 +73,10 @@ def patch_shell_service(text: str) -> str:
     )
 
     old = '        std::string shell_command;\n'
-    new = '''        // J720F_STOCK_ROOT_SECLABEL_CHILD: do not setcon() here.
-        // CUL1 stock recovery has already moved the root adbd parent from
-        // u:r:adbd:s0 to u:r:su:s0 via --root_seclabel, so the command child
-        // must inherit that stock root context through exec.
+    new = r'''        // J720F_CHILD_SU_HANDOFF: keep the parent adbd in u:r:adbd:s0 so
+        // the proven FunctionFS/USB path is unchanged. Move only this forked
+        // command child into stock recovery's root u:r:su:s0 context before
+        // executing /sbin/sh.
         const char* j720f_child_ld = "<absent>";
         for (const char* item : cenv) {
             if (item != nullptr && strncmp(item, "LD_LIBRARY_PATH=", 16) == 0) {
@@ -90,10 +85,41 @@ def patch_shell_service(text: str) -> str:
             }
         }
 
-        char* j720f_child_context = nullptr;
+        char* j720f_pre_context = nullptr;
         errno = 0;
-        const int j720f_getcon = getcon(&j720f_child_context);
-        const int j720f_getcon_errno = j720f_getcon == 0 ? 0 : errno;
+        const int j720f_pre_getcon = getcon(&j720f_pre_context);
+        const int j720f_pre_getcon_errno = j720f_pre_getcon == 0 ? 0 : errno;
+
+        char j720f_child_diag[896];
+        snprintf(j720f_child_diag, sizeof(j720f_child_diag),
+                 "J720F_SHELL_CHILD phase=pre_setcon_su uid=%d euid=%d gid=%d egid=%d "
+                 "context=%s context_errno=%d cenv_ld=%s\n",
+                 static_cast<int>(getuid()), static_cast<int>(geteuid()),
+                 static_cast<int>(getgid()), static_cast<int>(getegid()),
+                 j720f_pre_getcon == 0 && j720f_pre_context != nullptr ? j720f_pre_context : "<unavailable>",
+                 j720f_pre_getcon_errno, j720f_child_ld);
+        WriteFdExactly(STDERR_FILENO, j720f_child_diag);
+        if (j720f_pre_context != nullptr) {
+            freecon(j720f_pre_context);
+        }
+
+        errno = 0;
+        if (selinux_android_setcon("u:r:su:s0") < 0) {
+            const int saved_errno = errno;
+            snprintf(j720f_child_diag, sizeof(j720f_child_diag),
+                     "J720F_CHILD_SU_SELCON failed errno=%d (%s)\n",
+                     saved_errno, strerror(saved_errno));
+            WriteFdExactly(STDERR_FILENO, j720f_child_diag);
+            WriteFdExactly(child_error_sfd.fd(), "J720F_CHILD_SU_SELCON failed: ");
+            WriteFdExactly(child_error_sfd.fd(), strerror(saved_errno));
+            child_error_sfd.Reset();
+            _Exit(1);
+        }
+
+        char* j720f_post_context = nullptr;
+        errno = 0;
+        const int j720f_post_getcon = getcon(&j720f_post_context);
+        const int j720f_post_getcon_errno = j720f_post_getcon == 0 ? 0 : errno;
 
         struct stat j720f_sbin_st;
         const int j720f_sbin_stat = stat("/sbin", &j720f_sbin_st);
@@ -101,27 +127,26 @@ def patch_shell_service(text: str) -> str:
         const int j720f_libc_access = access("/sbin/libc.so", R_OK);
         const int j720f_libc_errno = j720f_libc_access == 0 ? 0 : errno;
 
-        char j720f_child_diag[768];
         snprintf(j720f_child_diag, sizeof(j720f_child_diag),
-                 "J720F_SHELL_CHILD phase=inherited_root_seclabel uid=%d euid=%d gid=%d egid=%d "
+                 "J720F_SHELL_CHILD phase=post_setcon_su uid=%d euid=%d gid=%d egid=%d "
                  "context=%s context_errno=%d cenv_ld=%s sbin_stat=%d sbin_mode=%04o "
-                 "sbin_uid=%d sbin_gid=%d libc_access=%d libc_errno=%d\\n",
+                 "sbin_uid=%d sbin_gid=%d libc_access=%d libc_errno=%d\n",
                  static_cast<int>(getuid()), static_cast<int>(geteuid()),
                  static_cast<int>(getgid()), static_cast<int>(getegid()),
-                 j720f_getcon == 0 && j720f_child_context != nullptr ? j720f_child_context : "<unavailable>",
-                 j720f_getcon_errno, j720f_child_ld, j720f_sbin_stat,
+                 j720f_post_getcon == 0 && j720f_post_context != nullptr ? j720f_post_context : "<unavailable>",
+                 j720f_post_getcon_errno, j720f_child_ld, j720f_sbin_stat,
                  j720f_sbin_stat == 0 ? static_cast<unsigned int>(j720f_sbin_st.st_mode & 07777) : 0,
                  j720f_sbin_stat == 0 ? static_cast<int>(j720f_sbin_st.st_uid) : -1,
                  j720f_sbin_stat == 0 ? static_cast<int>(j720f_sbin_st.st_gid) : -1,
                  j720f_libc_access, j720f_libc_errno);
         WriteFdExactly(STDERR_FILENO, j720f_child_diag);
-        if (j720f_child_context != nullptr) {
-            freecon(j720f_child_context);
+        if (j720f_post_context != nullptr) {
+            freecon(j720f_post_context);
         }
 
         std::string shell_command;
 '''
-    text = replace_once(text, old, new, "stock root-seclabel child trace")
+    text = replace_once(text, old, new, "child su handoff trace")
 
     old_exec = '''        if (command_.empty()) {
             execle(shell_command.c_str(), shell_command.c_str(), "-", nullptr, cenv.data());
@@ -159,11 +184,12 @@ def main() -> int:
         "source": str(path.relative_to(root)),
         "sha256_before": sha256(original),
         "sha256_after": sha256(patched),
-        "expected_inherited_context": EXPECTED_CONTEXT,
+        "target_child_context": TARGET_CONTEXT,
         "required_marker": MARKER,
         "child_diag_marker": CHILD_MARKER,
         "explicit_ld_library_path": "/sbin",
-        "command_child_setcon": False,
+        "command_child_setcon": True,
+        "parent_adbd_root_seclabel": False,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")
