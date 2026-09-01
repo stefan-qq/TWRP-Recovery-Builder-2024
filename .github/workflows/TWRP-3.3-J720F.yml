@@ -236,9 +236,13 @@ jobs:
             "$SYSTEM_CORE/adb/usb_linux_client.cpp"
           grep -Fq '/tmp/J720F_ADBD_TRACE.txt' \
             "$SYSTEM_CORE/adb/adb_trace.cpp"
-          grep -Fq 'J720F_ADBD_ROOT_SHELL' \
+          grep -Fq 'J720F_ADB_RECOVERY_CHILD' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'J720F_SHELL_CHILD phase=adbd_root_pre_exec' \
+          grep -Fq 'J720F_SHELL_CHILD phase=pre_setcon_recovery' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'J720F_SHELL_CHILD phase=post_setcon_recovery' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'selinux_android_setcon("u:r:recovery:s0")' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'const std::string shell_command = "/sbin/sh";' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
@@ -246,11 +250,8 @@ jobs:
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'env["SHELL"] = "/sbin/sh"' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
-          if grep -Fq 'selinux_android_setcon("u:r:' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"; then
-            echo 'Superseded per-command SELinux setcon remains in shell_service.cpp' >&2
-            exit 1
-          fi
+          reject_grep 'superseded shell child setcon remains' -Fq 'selinux_android_setcon("u:r:shell:s0")' "$SYSTEM_CORE/adb/shell_service.cpp"
+          reject_grep 'superseded su child setcon remains' -Fq 'selinux_android_setcon("u:r:su:s0")' "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'J720F_LINKER_DIAG' \
             "$BIONIC/linker/linker.cpp"
           grep -Fq 'J720F_LINKER_CRED phase=' \
@@ -411,7 +412,7 @@ jobs:
           grep -q 'allow recovery vfat:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
           reject_grep 'device policy makes init or recovery permissive' -Rq '^permissive \(init\|recovery\);' sepolicy
-          grep -q '^permissive adbd;' sepolicy/adbd.te
+          reject_grep 'device policy makes adbd permissive' -q '^permissive adbd;' sepolicy/adbd.te
           grep -q 'allow init configfs:file create_file_perms;' sepolicy/init.te
           grep -q 'allow init functionfs:filesystem' sepolicy/init.te
           grep -q 'allow init sysfs_usb:file rw_file_perms;' sepolicy/init.te
@@ -419,13 +420,13 @@ jobs:
           grep -q 'set_prop(adbd, ffs_prop)' sepolicy/adbd.te
           grep -q 'get_prop(adbd, twrp_prop)' sepolicy/adbd.te
           grep -q 'allow adbd rootfs:file rx_file_perms;' sepolicy/adbd.te
-          reject_grep 'superseded adbd setcurrent remains' -q 'allow adbd self:process setcurrent;' sepolicy/adbd.te
+          grep -q 'allow adbd self:process setcurrent;' sepolicy/adbd.te
           reject_grep 'superseded adbd su dyntransition remains' -q 'allow adbd su:process dyntransition;' sepolicy/adbd.te
           reject_grep 'superseded su inherited fd rule remains' -q 'allow su adbd:fd use;' sepolicy/adbd.te
           reject_grep 'superseded su inherited socket rule remains' -q 'allow su adbd:unix_stream_socket' sepolicy/adbd.te
-          reject_grep 'superseded adbd recovery dyntransition remains' -q 'allow adbd recovery:process' sepolicy/adbd.te
-          reject_grep 'superseded recovery inherited adbd fd rule remains' -q 'allow recovery adbd:fd use;' sepolicy/adbd.te
-          reject_grep 'superseded recovery inherited adbd socket rule remains' -q 'allow recovery adbd:unix_stream_socket' sepolicy/adbd.te
+          grep -q 'allow adbd recovery:process dyntransition;' sepolicy/adbd.te
+          grep -q 'allow recovery adbd:fd use;' sepolicy/adbd.te
+          grep -q 'allow recovery adbd:unix_stream_socket { read write ioctl getattr };' sepolicy/adbd.te
           reject_grep 'superseded adbd shell domain transition remains' -q 'domain_trans(adbd, rootfs, shell)' sepolicy/adbd.te
           reject_grep 'superseded adbd shell dyntransition remains' -q 'allow adbd shell:process dyntransition;' sepolicy/adbd.te
           reject_grep 'superseded adbd shell noatsecure remains' -q 'allow adbd shell:process noatsecure;' sepolicy/adbd.te
@@ -650,6 +651,11 @@ jobs:
           grep -q '^allow adbd twrp_prop:file ' "$POLICY_CONF"
           grep -Eq '^allow adbd rootfs:file .*execute_no_trans' "$POLICY_CONF"
           echo 'Verified compiled adbd rootfs execute_no_trans permission for /sbin recovery shell'
+          grep -q '^allow adbd self:process setcurrent;' "$POLICY_CONF"
+          grep -Eq '^allow adbd recovery:process .*dyntransition' "$POLICY_CONF"
+          grep -q '^allow recovery adbd:fd use;' "$POLICY_CONF"
+          grep -q '^allow recovery adbd:unix_stream_socket ' "$POLICY_CONF"
+          echo 'Verified compiled child-only adbd -> recovery transition and inherited I/O permissions'
           if grep -E '^allow adbd tmpfs:.*[[:space:]{}](create|write|append|setattr|unlink|rename|add_name|remove_name|reparent|rmdir|relabelfrom|relabelto|execute|execute_no_trans|entrypoint|mounton)([[:space:]{};]|$)' "$POLICY_CONF"; then
             echo 'Rejected: compiled policy grants generic adbd tmpfs write or execute access' >&2
             exit 1
@@ -666,11 +672,11 @@ jobs:
           reject_grep 'compiled policy still lets su set ffs_prop' -q '^allow su ffs_prop:property_service set;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
-          if ! grep -Fxq 'adbd' "$OUT/sepolicy-permissive-domains.txt"; then
-            echo 'Compiled recovery policy does not make the recovery-only adbd domain permissive' >&2
+          if grep -Eq '^(adbd|init|recovery)$' "$OUT/sepolicy-permissive-domains.txt"; then
+            echo 'init/recovery/adbd must all remain enforcing domains' >&2
             exit 1
           fi
-          echo 'Verified: only the recovery ADB execution domain intentionally bypasses MAC denials'
+          echo 'Verified: parent adbd and recovery child remain enforcing SELinux domains'
           if grep -Eq '^init$' "$OUT/sepolicy-permissive-domains.txt"; then
             echo 'init unexpectedly permissive' >&2
             exit 1
@@ -697,9 +703,12 @@ jobs:
           grep -aFq 'event=v2_descriptor_write' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F_SHELL_CHILD phase=adbd_root_pre_exec' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F root adb child lost UID 0 before exec' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F /sbin/sh is not executable in adbd domain' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_SHELL_CHILD phase=pre_setcon_recovery' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_SHELL_CHILD phase=post_setcon_recovery' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_CHILD_RECOVERY_SELCON failed' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F adb command child lost root before recovery setcon' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F recovery-domain adb child lost UID/GID 0 before exec' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F /sbin/sh is not executable in recovery child domain' "$OUT/recovery/root/sbin/adbd"
           reject_grep 'built adbd still contains child su handoff' -aFq 'J720F_CHILD_SU_SELCON failed' "$OUT/recovery/root/sbin/adbd"
           grep -Fq 'service adbd /sbin/adbd --device_banner=recovery' "$OUT/recovery/root/init.rc"
           reject_grep 'built ramdisk still moves whole adbd daemon to root_seclabel' -Eq '^[[:space:]]*service[[:space:]]+adbd[[:space:]].*--root_seclabel=' "$OUT/recovery/root/init.rc"
