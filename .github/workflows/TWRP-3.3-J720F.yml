@@ -379,6 +379,8 @@ jobs:
 
           test -x tools/audit_recovery.py
           test -x tools/finalize_samsung_recovery.py
+          grep -Fq 'EXPECTED_KERNEL_SHA256 = "03e4c4e2dbe3fe32051e71e295d1bb8901fca5565ff3b58f81272a1a498b4d18"' tools/audit_recovery.py
+          grep -Fq 'DEFEX_EXECVE_OFFSET = 0x154524' tools/audit_recovery.py
           test -f prebuilt/kernel
           test -f prebuilt/dt.img
           test -f prebuilt/samsung-recovery-trailer.bin
@@ -721,6 +723,9 @@ jobs:
           IMAGE="$OUT/recovery.img"
 
           test -f "$IMAGE"
+          test -x tools/patch_j720f_recovery_kernel_defex.py
+          python3 tools/patch_j720f_recovery_kernel_defex.py "$IMAGE" \
+            --report workspace/j720f-build-diagnostics/kernel-defex-patch-report.json
           python3 "$TREE/tools/finalize_samsung_recovery.py" "$IMAGE"
           python3 "$TREE/tools/audit_recovery.py" "$IMAGE" \
             --tree "$TREE" \
@@ -748,6 +753,7 @@ jobs:
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
             echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
             echo 'diagnostic=working USB/ADB transport plus shell-child credential/env and linker rootfs-libc traces'
+            echo 'recovery_kernel=exact CUL1 stock kernel with recovery-only Samsung DEFEX execve selector neutralized'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
