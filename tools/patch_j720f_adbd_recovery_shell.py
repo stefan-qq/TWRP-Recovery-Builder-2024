@@ -154,6 +154,16 @@ def patch_shell_service(text: str) -> str:
 '''
     text = replace_once(text, selector, "", "donor shell path selector")
 
+    # The donor selector's PATH_MAX property buffer becomes dead once the
+    # property-controlled shell path is removed. This tree builds adbd with
+    # -Werror, so remove the declaration as part of the same transformation.
+    text = replace_once(
+        text,
+        '    char propbuf[PATH_MAX];\n',
+        '',
+        "unused donor shell property buffer",
+    )
+
     old_exec = '''        if (command_.empty()) {
             execle(shell_command.c_str(), shell_command.c_str(), "-", nullptr, cenv.data());
 '''
