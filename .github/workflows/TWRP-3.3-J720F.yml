@@ -379,8 +379,10 @@ jobs:
 
           test -x tools/audit_recovery.py
           test -x tools/finalize_samsung_recovery.py
-          grep -Fq 'EXPECTED_KERNEL_SHA256 = "03e4c4e2dbe3fe32051e71e295d1bb8901fca5565ff3b58f81272a1a498b4d18"' tools/audit_recovery.py
-          grep -Fq 'DEFEX_EXECVE_OFFSET = 0x154524' tools/audit_recovery.py
+          grep -Fq 'EXPECTED_KERNEL_SHA256 = "d33cf9471a60e8a3235a656bd949b18b1d0805945cc3072f463274bfe23f8a93"' tools/audit_recovery.py
+          grep -Fq 'ADB_EXEC_CRED_OFFSET = 0x154D18' tools/audit_recovery.py
+          grep -Fq 'DEFEX_EXECVE_SELECTOR_OFFSET = 0x154524' tools/audit_recovery.py
+          grep -Fq 'OTHER_ADB_ROOT_OFFSET = 0x2F47D4' tools/audit_recovery.py
           test -f prebuilt/kernel
           test -f prebuilt/dt.img
           test -f prebuilt/samsung-recovery-trailer.bin
@@ -409,7 +411,7 @@ jobs:
           grep -q 'allow recovery vfat:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery self:netlink_kobject_uevent_socket create_socket_perms;' sepolicy/recovery.te
           reject_grep 'device policy makes init or recovery permissive' -Rq '^permissive \(init\|recovery\);' sepolicy
-          reject_grep 'adbd is still explicitly permissive' -q '^permissive adbd;' sepolicy/adbd.te
+          grep -q '^permissive adbd;' sepolicy/adbd.te
           grep -q 'allow init configfs:file create_file_perms;' sepolicy/init.te
           grep -q 'allow init functionfs:filesystem' sepolicy/init.te
           grep -q 'allow init sysfs_usb:file rw_file_perms;' sepolicy/init.te
@@ -664,7 +666,11 @@ jobs:
           reject_grep 'compiled policy still lets su set ffs_prop' -q '^allow su ffs_prop:property_service set;' "$POLICY_CONF"
           "$ANALYZE" "$RECOVERY_POLICY" permissive \
             | tee "$OUT/sepolicy-permissive-domains.txt"
-          echo 'Recorded compiled permissive domains; root ADB shell no longer depends on any permissive domain'
+          if ! grep -Fxq 'adbd' "$OUT/sepolicy-permissive-domains.txt"; then
+            echo 'Compiled recovery policy does not make the recovery-only adbd domain permissive' >&2
+            exit 1
+          fi
+          echo 'Verified: only the recovery ADB execution domain intentionally bypasses MAC denials'
           if grep -Eq '^init$' "$OUT/sepolicy-permissive-domains.txt"; then
             echo 'init unexpectedly permissive' >&2
             exit 1
@@ -753,7 +759,7 @@ jobs:
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
             echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
             echo 'diagnostic=working USB/ADB transport plus shell-child credential/env and linker rootfs-libc traces'
-            echo 'recovery_kernel=exact CUL1 stock kernel with recovery-only Samsung DEFEX execve selector neutralized'
+            echo 'recovery_kernel=exact CUL1 stock kernel with proven recovery-only /sbin/adbd exec credential downgrade neutralized'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
