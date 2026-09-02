@@ -443,7 +443,11 @@ jobs:
             | sha256sum -c -
           grep -Fq 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
           grep -Fq 'TW_INCLUDE_CRYPTO := true' BoardConfig.mk
-          grep -Fq 'TW_EXCLUDE_MTP := true' BoardConfig.mk
+          grep -Fq 'TW_MTP_DEVICE := "/dev/mtp_usb"' BoardConfig.mk
+          if grep -Fq 'TW_EXCLUDE_MTP := true' BoardConfig.mk; then
+            echo 'MTP must be enabled for the final USB validation build' >&2
+            exit 1
+          fi
           grep -Fq 'TW_DEFAULT_EXTERNAL_STORAGE := true' BoardConfig.mk
           grep -Fq 'BOARD_SEPOLICY_DIRS += device/samsung/j7duolte/sepolicy' BoardConfig.mk
           reject_grep 'TW_INCLUDE_FBE remains enabled' -q 'TW_INCLUDE_FBE' BoardConfig.mk
@@ -607,10 +611,11 @@ jobs:
             echo 'Late permissive workaround remains' >&2
             exit 1
           fi
-          if grep -qi 'mtp' recovery/root/init.recovery.usb.rc; then
-            echo 'MTP must remain isolated in this ADB transport test' >&2
-            exit 1
-          fi
+          grep -Fq 'functions/mtp.gs0' recovery/root/init.recovery.usb.rc
+          grep -Fq 'configs/c.1/mtp.gs0' recovery/root/init.recovery.usb.rc
+          grep -Fq 'write /sys/class/android_usb/android0/functions mtp,adb' recovery/root/init.recovery.usb.rc
+          grep -Fq 'setprop sys.usb.config mtp,adb' recovery/root/init.recovery.usb.rc
+          grep -Fq 'setprop sys.usb.state mtp,adb' recovery/root/init.recovery.usb.rc
           grep -Eq '^/dev/usb-ffs/adb/ep0[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
           grep -Eq '^/dev/usb-ffs/adb/ep1[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
           grep -Eq '^/dev/usb-ffs/adb/ep2[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
@@ -881,5 +886,5 @@ jobs:
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
             --title "J720F TWRP 3.3 UDC ACM control diagnostic ${{ github.run_id }}" \
-            --notes "Diagnostic build: PID 1 records the exact failed g1/UDC bind and, only after the known ffs.adb EINVAL, performs one temporary ConfigFS CDC ACM bind against the same DWC3 UDC, records the result, unbinds and cleans it up. This isolates FunctionFS/composite failure from lower DWC3/UDC failure. Working /data and native FunctionFS adbd are retained. MTP remains excluded. Not a stable community release." \
+            --notes "Diagnostic build: PID 1 records the exact failed g1/UDC bind and, only after the known ffs.adb EINVAL, performs one temporary ConfigFS CDC ACM bind against the same DWC3 UDC, records the result, unbinds and cleans it up. This isolates FunctionFS/composite failure from lower DWC3/UDC failure. Working /data and native FunctionFS adbd are retained. Kernel-backed Samsung MTP is enabled alongside the proven FunctionFS ADB path for hardware validation. Not a stable community release." \
             --prerelease
