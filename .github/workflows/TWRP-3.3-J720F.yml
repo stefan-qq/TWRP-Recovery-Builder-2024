@@ -283,6 +283,10 @@ jobs:
             "$SYSTEM_CORE/adb/services.cpp"
           grep -Fq 'J720F_ADB_SYNC_FD=3' \
             "$SYSTEM_CORE/adb/services.cpp"
+          grep -Fq 'adb_close(close_fd);' \
+            "$SYSTEM_CORE/adb/services.cpp"
+          reject_grep 'sync worker uses poisoned libc close macro' -Eq '^[[:space:]]*close\(close_fd\);' \
+            "$SYSTEM_CORE/adb/services.cpp"
           grep -Fq 'J720F_ADB_SYNC_WORKER phase=entry' \
             "$SYSTEM_CORE/adb/daemon/main.cpp"
           grep -Fq 'file_sync_service(static_cast<int>(parsed_fd), nullptr)' \

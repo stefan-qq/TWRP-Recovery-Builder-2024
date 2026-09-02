@@ -111,7 +111,7 @@ static void j720f_recovery_sync_service(int fd, void*) {
             _exit(126);
         }
         for (int close_fd = 4; close_fd < max_fd; ++close_fd) {
-            close(close_fd);
+            (void)adb_close(close_fd);
         }
 
         char arg0[] = "/sbin/adbd";
