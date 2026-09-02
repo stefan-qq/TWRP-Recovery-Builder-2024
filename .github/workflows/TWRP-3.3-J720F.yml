@@ -443,11 +443,8 @@ jobs:
             | sha256sum -c -
           grep -Fq 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
           grep -Fq 'TW_INCLUDE_CRYPTO := true' BoardConfig.mk
-          grep -Fq 'TW_MTP_DEVICE := "/dev/mtp_usb"' BoardConfig.mk
-          if grep -Fq 'TW_EXCLUDE_MTP := true' BoardConfig.mk; then
-            echo 'MTP must be enabled for the final USB validation build' >&2
-            exit 1
-          fi
+          grep -Fq 'TW_MTP_DEVICE := "/dev/usb_mtp_gadget"' BoardConfig.mk
+          reject_grep 'MTP remains excluded' -q 'TW_EXCLUDE_MTP' BoardConfig.mk
           grep -Fq 'TW_DEFAULT_EXTERNAL_STORAGE := true' BoardConfig.mk
           grep -Fq 'BOARD_SEPOLICY_DIRS += device/samsung/j7duolte/sepolicy' BoardConfig.mk
           reject_grep 'TW_INCLUDE_FBE remains enabled' -q 'TW_INCLUDE_FBE' BoardConfig.mk
@@ -500,6 +497,8 @@ jobs:
           grep -q 'create_pty(recovery)' sepolicy/recovery.te
           grep -q 'set_prop(recovery, twrp_prop)' sepolicy/recovery.te
           grep -q 'set_prop(recovery, system_radio_prop)' sepolicy/recovery.te
+          grep -q 'allow recovery mtp_device:chr_file rw_file_perms;' sepolicy/recovery.te
+          grep -Fq '/dev/usb_mtp_gadget.*' sepolicy/file_contexts
           grep -q 'type twrp_prop, property_type;' sepolicy/property.te
           grep -Eq '^j720f\.[[:space:]]+u:object_r:twrp_prop:s0$' sepolicy/property_contexts
           grep -q '^ro.twrp\.' sepolicy/property_contexts
@@ -529,7 +528,13 @@ jobs:
           reject_grep 'FunctionFS endpoints are still shell-owned while adbd runs as root' -q 'mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000' recovery/root/init.recovery.usb.rc
           grep -q '/sys/kernel/config/usb_gadget/g1/functions/ffs.adb' recovery/root/init.recovery.usb.rc
           grep -q '/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb' recovery/root/init.recovery.usb.rc
+          grep -q 'mkdir /sys/kernel/config/usb_gadget/g1/functions/mtp.0 0770 root root' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.mtp_create_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
+          grep -q 'on property:sys.usb.config=mtp,adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
+          grep -q 'write /sys/class/android_usb/android0/functions mtp,adb' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop j720f.usb.mtp_configfs_bind 1' recovery/root/init.recovery.usb.rc
+          grep -q 'setprop sys.usb.state mtp,adb' recovery/root/init.recovery.usb.rc
           grep -q 'write /sys/kernel/config/usb_gadget/g1/UDC ${sys.usb.controller}' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.transport native-android71-ffs' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.adbd_domain_only 1' recovery/root/init.recovery.usb.rc
@@ -577,31 +582,74 @@ jobs:
           if "j720f.usb.pure_configfs_bind_action" in usb:
               raise SystemExit("overlength Android 7 property name remains")
 
-          stock_gate = [
+          mtp_create = "mkdir /sys/kernel/config/usb_gadget/g1/functions/mtp.0 0770 root root"
+          mtp_link = (
+              "symlink /sys/kernel/config/usb_gadget/g1/functions/mtp.0 "
+              "/sys/kernel/config/usb_gadget/g1/configs/c.1/mtp.0"
+          )
+          if usb.count(mtp_create) != 1 or usb.count(mtp_link) != 1:
+              raise SystemExit("expected exactly one Samsung kernel MTP function and link")
+          mtp_create_index = usb.find(mtp_create)
+          if not (link_index < mtp_create_index < mount_index):
+              raise SystemExit(
+                  "mtp.0 must be created by init after permanent ffs.adb registration "
+                  "and before the FunctionFS mount"
+              )
+          if "rm /sys/kernel/config/usb_gadget/g1/configs/c.1/mtp.0" not in usb:
+              raise SystemExit("ADB-only/none paths must be able to remove the optional MTP link")
+
+          adb_gate = [
               "write /sys/class/android_usb/android0/enable 0",
               "write /sys/class/android_usb/android0/f_ffs/aliases adb",
               "write /sys/class/android_usb/android0/functions adb",
+              "write /sys/class/android_usb/android0/enable 1",
+          ]
+          mtp_gate = [
+              "write /sys/class/android_usb/android0/enable 0",
+              "write /sys/class/android_usb/android0/f_ffs/aliases adb",
+              "write /sys/class/android_usb/android0/functions mtp,adb",
               "write /sys/class/android_usb/android0/enable 1",
           ]
           android_usb_lines = [
               line.strip() for line in usb.splitlines()
               if "/sys/class/android_usb/android0/" in line
           ]
-          if android_usb_lines != stock_gate:
+          if android_usb_lines != adb_gate + mtp_gate:
               raise SystemExit(
-                  "expected exactly the four CUL1 stock android_usb gate writes; "
+                  "expected only the CUL1 android_usb gate writes in adb/mtp order; "
                   f"found: {android_usb_lines}"
               )
 
           udc_bind = "write /sys/kernel/config/usb_gadget/g1/UDC ${sys.usb.controller}"
-          ordered = [trigger] + stock_gate[:3] + [udc_bind, stock_gate[3]]
+          ordered = [trigger] + adb_gate[:3] + [udc_bind, adb_gate[3]]
           indices = [usb.find(item) for item in ordered]
           if min(indices) < 0 or indices != sorted(indices) or len(set(indices)) != len(indices):
               raise SystemExit(
-                  "CUL1 android_usb gate must wrap the ConfigFS UDC bind in stock order"
+                  "CUL1 android_usb ADB gate must wrap the ConfigFS UDC bind in stock order"
               )
 
-          print("Verified Samsung stock-order ConfigFS/FunctionFS registration and android_usb UDC gate")
+          mtp_trigger = (
+              "on property:sys.usb.config=mtp,adb && property:sys.usb.ffs.ready=1 "
+              "&& property:sys.usb.configfs=1"
+          )
+          mtp_unbind = "write /sys/kernel/config/usb_gadget/g1/UDC none"
+          mtp_rm = "rm /sys/kernel/config/usb_gadget/g1/configs/c.1/mtp.0"
+          mtp_ordered = [
+              mtp_gate[0], mtp_unbind, mtp_rm, mtp_link,
+              mtp_gate[1], mtp_gate[2], udc_bind, mtp_gate[3],
+          ]
+          start = usb.find(mtp_trigger)
+          if start < 0:
+              raise SystemExit("missing mtp,adb ConfigFS bind trigger")
+          # Search every bind element after the MTP trigger so the earlier ADB gate
+          # cannot accidentally satisfy this order check.
+          pos = start
+          for item in mtp_ordered:
+              pos = usb.find(item, pos + 1)
+              if pos < 0:
+                  raise SystemExit(f"MTP bind order is incomplete at: {item}")
+
+          print("Verified Samsung stock-order ffs.adb plus kernel mtp.0 ConfigFS switching")
           PY_CHECK
           if grep -q 'functions/adb.0\|configs/c.1/adb.0\|/dev/android_adb' recovery/root/init.recovery.usb.rc; then
             echo 'Rejected direct legacy ADB route remains' >&2
@@ -611,14 +659,10 @@ jobs:
             echo 'Late permissive workaround remains' >&2
             exit 1
           fi
-          grep -Fq 'functions/mtp.gs0' recovery/root/init.recovery.usb.rc
-          grep -Fq 'configs/c.1/mtp.gs0' recovery/root/init.recovery.usb.rc
-          grep -Fq 'write /sys/class/android_usb/android0/functions mtp,adb' recovery/root/init.recovery.usb.rc
-          grep -Fq 'setprop sys.usb.config mtp,adb' recovery/root/init.recovery.usb.rc
-          grep -Fq 'setprop sys.usb.state mtp,adb' recovery/root/init.recovery.usb.rc
           grep -Eq '^/dev/usb-ffs/adb/ep0[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
           grep -Eq '^/dev/usb-ffs/adb/ep1[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
           grep -Eq '^/dev/usb-ffs/adb/ep2[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
+          grep -Eq '^/dev/usb_mtp_gadget[[:space:]]+0660[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
           grep -q 'service j7diag /sbin/sh /sbin/j720f_runtime_diag.sh' recovery/root/init.recovery.usb.rc
           grep -q 'group root shell readproc' recovery/root/init.recovery.usb.rc
           grep -q 'seclabel u:r:recovery:s0' recovery/root/init.recovery.usb.rc
@@ -885,6 +929,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 UDC ACM control diagnostic ${{ github.run_id }}" \
-            --notes "Diagnostic build: PID 1 records the exact failed g1/UDC bind and, only after the known ffs.adb EINVAL, performs one temporary ConfigFS CDC ACM bind against the same DWC3 UDC, records the result, unbinds and cleans it up. This isolates FunctionFS/composite failure from lower DWC3/UDC failure. Working /data and native FunctionFS adbd are retained. Kernel-backed Samsung MTP is enabled alongside the proven FunctionFS ADB path for hardware validation. Not a stable community release." \
+            --title "J720F TWRP 3.3 ADB + MTP validation ${{ github.run_id }}" \
+            --notes "Validation build: preserves the hardware-proven native Android 7.1 FunctionFS ADB parent/child architecture and the single Samsung +0x154d18 credential fix, while adding PID1-owned Samsung kernel mtp.0 ConfigFS switching for TWRP MTP through /dev/usb_mtp_gadget. Not a stable community release until hardware validation is complete." \
             --prerelease
