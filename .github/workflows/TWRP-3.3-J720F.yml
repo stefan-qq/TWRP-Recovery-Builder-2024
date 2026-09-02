@@ -121,6 +121,22 @@ jobs:
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
 
+      - name: Correct legacy TWRP MTP date-property serialization
+        shell: bash
+        run: |
+          set -euxo pipefail
+          RECOVERY=workspace/bootable/recovery
+          MTP_STORAGE="$RECOVERY/mtp/legacy/MtpStorage.cpp"
+          python3 tools/patch_j720f_twrp_mtp_date_props.py --recovery "$RECOVERY"
+          git -C "$RECOVERY" diff --check
+          grep -Fq '#include "MtpUtils.h"' "$MTP_STORAGE"
+          grep -Fq 'normalizeDatePropertyForMtp(pe);' "$MTP_STORAGE"
+          test "$(grep -Fc 'normalizeDatePropertyForMtp(pe);' "$MTP_STORAGE")" -eq 2
+          grep -Fq 'MTP_PROPERTY_DATE_MODIFIED' "$MTP_STORAGE"
+          grep -Fq 'MTP_PROPERTY_DATE_ADDED' "$MTP_STORAGE"
+          grep -Fq 'MTP_PROPERTY_ORIGINAL_RELEASE_DATE' "$MTP_STORAGE"
+          git -C "$RECOVERY" diff -- mtp/legacy/MtpStorage.cpp
+
       - name: Patch legacy TWRP ORS FIFO paths
         shell: bash
         run: |
