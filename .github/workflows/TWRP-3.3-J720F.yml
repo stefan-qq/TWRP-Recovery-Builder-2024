@@ -192,6 +192,12 @@ jobs:
           python3 tools/patch_j720f_adbd_recovery_shell.py \
             --system-core "$SYSTEM_CORE" \
             --report "$TRACE_DIR/adbd-recovery-shell-patch-report.json"
+          python3 tools/patch_j720f_adbd_pty_exec_transition.py \
+            --system-core "$SYSTEM_CORE" \
+            --report "$TRACE_DIR/adbd-pty-exec-transition-patch-report.json"
+          python3 tools/patch_j720f_adbd_sync_worker.py \
+            --system-core "$SYSTEM_CORE" \
+            --report "$TRACE_DIR/adbd-sync-worker-patch-report.json"
           python3 tools/patch_j720f_linker_diag.py \
             --bionic "$BIONIC" \
             --report "$TRACE_DIR/linker-diag-patch-report.json"
@@ -205,6 +211,7 @@ jobs:
             adb/daemon/main.cpp \
             adb/usb_linux_client.cpp \
             adb/adb_trace.cpp \
+            adb/services.cpp \
             adb/shell_service.cpp \
             init/util.cpp \
             > "$TRACE_DIR/system-core-adbd-direct-trace.patch"
@@ -219,6 +226,8 @@ jobs:
             "$TRACE_DIR/usb_linux_client.cpp.patched"
           cp "$SYSTEM_CORE/adb/adb_trace.cpp" \
             "$TRACE_DIR/adb_trace.cpp.patched"
+          cp "$SYSTEM_CORE/adb/services.cpp" \
+            "$TRACE_DIR/services.cpp.patched"
           cp "$SYSTEM_CORE/adb/shell_service.cpp" \
             "$TRACE_DIR/shell_service.cpp.patched"
           cp "$SYSTEM_CORE/init/util.cpp" \
@@ -258,6 +267,26 @@ jobs:
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'selinux_android_setcon("u:r:recovery:s0")' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'J720F_ADB_PTY_RECOVERY_EXEC' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'setexeccon("u:r:recovery:s0")' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'phase=pty_setexec_recovery_pending' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'post_setexec_recovery_pending' \
+            "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'J720F_ADB_SYNC_WORKER' \
+            "$SYSTEM_CORE/adb/services.cpp"
+          grep -Fq 'j720f_recovery_sync_service' \
+            "$SYSTEM_CORE/adb/services.cpp"
+          grep -Fq 'execve("/sbin/adbd", argv, envp)' \
+            "$SYSTEM_CORE/adb/services.cpp"
+          grep -Fq 'J720F_ADB_SYNC_FD=3' \
+            "$SYSTEM_CORE/adb/services.cpp"
+          grep -Fq 'J720F_ADB_SYNC_WORKER phase=entry' \
+            "$SYSTEM_CORE/adb/daemon/main.cpp"
+          grep -Fq 'file_sync_service(static_cast<int>(parsed_fd), nullptr)' \
+            "$SYSTEM_CORE/adb/daemon/main.cpp"
           grep -Fq 'const std::string shell_command = "/sbin/sh";' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'env["LD_LIBRARY_PATH"] = "/sbin"' \
@@ -667,11 +696,21 @@ jobs:
           echo 'Verified compiled adbd rootfs execute_no_trans permission for /sbin recovery shell'
           grep -q '^allow adbd self:process setcurrent;' "$POLICY_CONF"
           grep -Eq '^allow adbd recovery:process .*dyntransition' "$POLICY_CONF"
+          grep -q '^allow adbd self:process setexec;' "$POLICY_CONF"
+          grep -Eq '^allow adbd recovery:process .*[[:space:]{}]transition([[:space:]{};]|$)' "$POLICY_CONF"
+          grep -Eq '^allow adbd recovery:process .*siginh' "$POLICY_CONF"
+          grep -Eq '^allow adbd recovery:process .*rlimitinh' "$POLICY_CONF"
+          grep -Eq '^dontaudit adbd recovery:process .*noatsecure' "$POLICY_CONF"
+          grep -q '^allow recovery rootfs:file entrypoint;' "$POLICY_CONF"
+          grep -Eq '^allow recovery devpts:chr_file .*open' "$POLICY_CONF"
+          grep -Eq '^allow recovery devpts:chr_file .*read' "$POLICY_CONF"
+          grep -Eq '^allow recovery devpts:chr_file .*write' "$POLICY_CONF"
+          grep -Eq '^allow recovery devpts:chr_file .*ioctl' "$POLICY_CONF"
           grep -Eq '^allow recovery adbd:process .*sigchld' "$POLICY_CONF"
           grep -Eq '^allow adbd recovery:process .*signal' "$POLICY_CONF"
           grep -q '^allow recovery adbd:fd use;' "$POLICY_CONF"
           grep -q '^allow recovery adbd:unix_stream_socket ' "$POLICY_CONF"
-          echo 'Verified compiled child-only adbd -> recovery transition, lifecycle signaling and inherited I/O permissions'
+          echo 'Verified compiled raw/PTY/sync child-only adbd -> recovery transitions, lifecycle signaling and inherited I/O permissions'
           if grep -E '^allow adbd tmpfs:.*[[:space:]{}](create|write|append|setattr|unlink|rename|add_name|remove_name|reparent|rmdir|relabelfrom|relabelto|execute|execute_no_trans|entrypoint|mounton)([[:space:]{};]|$)' "$POLICY_CONF"; then
             echo 'Rejected: compiled policy grants generic adbd tmpfs write or execute access' >&2
             exit 1
@@ -720,11 +759,16 @@ jobs:
           grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_SHELL_CHILD phase=pre_setcon_recovery' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F_SHELL_CHILD phase=post_setcon_recovery' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'post_setcon_recovery' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_CHILD_RECOVERY_SELCON failed' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F PTY setexeccon' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'phase=pty_setexec_recovery_pending' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'post_setexec_recovery_pending' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_ADB_SYNC_WORKER' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F_ADB_SYNC_FD' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F adb command child lost root before recovery setcon' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F recovery-domain adb child lost UID/GID 0 before exec' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F /sbin/sh is not executable in recovery child domain' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F adb child lost UID/GID 0 before exec' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F /sbin/sh is not executable before adb child exec' "$OUT/recovery/root/sbin/adbd"
           reject_grep 'built adbd still contains child su handoff' -aFq 'J720F_CHILD_SU_SELCON failed' "$OUT/recovery/root/sbin/adbd"
           grep -Fq 'service adbd /sbin/adbd --device_banner=recovery' "$OUT/recovery/root/init.rc"
           reject_grep 'built ramdisk still moves whole adbd daemon to root_seclabel' -Eq '^[[:space:]]*service[[:space:]]+adbd[[:space:]].*--root_seclabel=' "$OUT/recovery/root/init.rc"
@@ -783,7 +827,7 @@ jobs:
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
             echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
-            echo 'diagnostic=working USB/ADB transport plus shell-child credential/env and linker rootfs-libc traces'
+            echo 'diagnostic=working USB/ADB transport plus raw/PTY shell and isolated sync-worker credential/context traces'
             echo 'recovery_kernel=exact CUL1 stock kernel with proven recovery-only /sbin/adbd exec credential downgrade neutralized'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
