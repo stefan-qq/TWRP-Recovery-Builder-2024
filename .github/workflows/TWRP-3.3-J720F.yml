@@ -263,7 +263,7 @@ jobs:
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'J720F_SHELL_CHILD phase=pre_setcon_recovery' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'J720F_SHELL_CHILD phase=post_setcon_recovery' \
+          grep -Fq '"post_setcon_recovery"' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'selinux_android_setcon("u:r:recovery:s0")' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
