@@ -546,8 +546,10 @@ jobs:
           grep -q '/sys/kernel/config/usb_gadget/g1/configs/c.1/ffs.adb' recovery/root/init.recovery.usb.rc
           grep -q 'mkdir /sys/kernel/config/usb_gadget/g1/functions/mtp.0 0770 root root' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.mtp_create_action 1' recovery/root/init.recovery.usb.rc
-          grep -q 'on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
-          grep -q 'on property:sys.usb.config=mtp,adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
+          grep -q 'on property:j720f.usb.rebind_req=adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
+          grep -q 'on property:j720f.usb.rebind_req=mtp && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
+          reject_grep 'ADB bind still replays directly on FunctionFS-ready changes' -q 'on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
+          reject_grep 'MTP bind still replays directly on FunctionFS-ready changes' -q 'on property:sys.usb.config=mtp,adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
           grep -q 'write /sys/class/android_usb/android0/functions mtp,adb' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.mtp_configfs_bind 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop sys.usb.state mtp,adb' recovery/root/init.recovery.usb.rc
@@ -573,7 +575,7 @@ jobs:
 
           usb = Path("recovery/root/init.recovery.usb.rc").read_text()
           trigger = (
-              "on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1 "
+              "on property:j720f.usb.rebind_req=adb && property:sys.usb.ffs.ready=1 "
               "&& property:sys.usb.configfs=1"
           )
           mount = "mount functionfs adb /dev/usb-ffs/adb uid=0,gid=0"
@@ -645,7 +647,7 @@ jobs:
               )
 
           mtp_trigger = (
-              "on property:sys.usb.config=mtp,adb && property:sys.usb.ffs.ready=1 "
+              "on property:j720f.usb.rebind_req=mtp && property:sys.usb.ffs.ready=1 "
               "&& property:sys.usb.configfs=1"
           )
           mtp_unbind = "write /sys/kernel/config/usb_gadget/g1/UDC none"
