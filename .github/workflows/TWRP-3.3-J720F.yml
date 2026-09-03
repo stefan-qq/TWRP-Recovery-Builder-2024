@@ -142,15 +142,16 @@ jobs:
         run: |
           set -euxo pipefail
           RECOVERY=workspace/bootable/recovery
-          MTP_SERVER="$RECOVERY/mtp/MtpServer.cpp"
+          MTP_SERVER="$RECOVERY/mtp/legacy/MtpServer.cpp"
           python3 tools/patch_j720f_twrp_mtp_receive_userspace.py --recovery "$RECOVERY"
           git -C "$RECOVERY" diff --check
           grep -Fq 'j720fReceiveFileInUserspace' "$MTP_SERVER"
+          grep -Fq '#include <unistd.h>' "$MTP_SERVER"
           grep -Fq 'read(mtpFd, buffer, request)' "$MTP_SERVER"
           grep -Fq 'write(fileFd, buffer + offset, count - offset)' "$MTP_SERVER"
           python3 - <<'PYVERIFY'
           from pathlib import Path
-          path = Path("workspace/bootable/recovery/mtp/MtpServer.cpp")
+          path = Path("workspace/bootable/recovery/mtp/legacy/MtpServer.cpp")
           text = path.read_text()
           start = text.index("MtpResponseCode MtpServer::doSendObject() {")
           end = text.index("MtpResponseCode MtpServer::doDeleteObject() {", start)
@@ -158,7 +159,7 @@ jobs:
           assert "ioctl(mFD, MTP_RECEIVE_FILE, (unsigned long)&mfr)" not in body
           assert "j720fReceiveFileInUserspace(mFD, mfr.fd, mfr.length" in body
           PYVERIFY
-          git -C "$RECOVERY" diff -- mtp/MtpServer.cpp
+          git -C "$RECOVERY" diff -- mtp/legacy/MtpServer.cpp
 
       - name: Patch legacy TWRP ORS FIFO paths
         shell: bash

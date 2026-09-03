@@ -65,11 +65,19 @@ def main() -> None:
     parser.add_argument('--recovery', required=True, help='Path to bootable/recovery checkout')
     args = parser.parse_args()
 
-    path = Path(args.recovery) / 'mtp/MtpServer.cpp'
+    path = Path(args.recovery) / 'mtp/legacy/MtpServer.cpp'
     if not path.is_file():
         raise SystemExit(f'missing pinned TWRP source: {path}')
 
     text = path.read_text()
+
+    # read(2)/write(2) are used directly by the J720F userspace receive helper.
+    if '#include <unistd.h>' not in text:
+        include_anchor = '#include <fcntl.h>\n'
+        if include_anchor not in text:
+            raise SystemExit('could not find fcntl include anchor for unistd.h')
+        text = text.replace(include_anchor, include_anchor + '#include <unistd.h>\n', 1)
+
     if HELPER_NAME in text:
         raise SystemExit('J720F userspace MTP receive correction already appears to be applied')
 
@@ -93,7 +101,7 @@ def main() -> None:
             f'found {function.count(IOCTL_CALL)}'
         )
 
-    # Keep the existing header read, file creation, permissions and initial-data write.
+    # Keep the existing header read, file creation and permissions unchanged.
     # Only replace the Samsung-kernel bulk receive ioctl for the remaining payload.
     function = function.replace(
         IOCTL_CALL,
@@ -123,6 +131,7 @@ def main() -> None:
         'read(mtpFd, buffer, request)',
         'write(fileFd, buffer + offset, count - offset)',
         '(mSendObjectFileSize == 0xFFFFFFFF)',
+        '#include <unistd.h>',
     )
     for needle in required:
         if needle not in text:
