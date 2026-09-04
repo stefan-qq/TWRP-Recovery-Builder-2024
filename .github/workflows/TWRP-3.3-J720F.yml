@@ -121,6 +121,42 @@ jobs:
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
 
+      - name: Integrate ADB sideload with J720F one-shot FunctionFS rebind
+        shell: bash
+        run: |
+          set -euxo pipefail
+          RECOVERY=workspace/bootable/recovery
+          ADB_INSTALL="$RECOVERY/adb_install.cpp"
+          python3 tools/patch_j720f_twrp_sideload_rebind.py --recovery "$RECOVERY"
+          git -C "$RECOVERY" diff --check
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          path = Path("workspace/bootable/recovery/adb_install.cpp")
+          text = path.read_text()
+          marker = text.index("apply_from_adb(")
+          brace = text.index("{", marker)
+          depth = 0
+          end = None
+          for pos in range(brace, len(text)):
+              if text[pos] == "{":
+                  depth += 1
+              elif text[pos] == "}":
+                  depth -= 1
+                  if depth == 0:
+                      end = pos + 1
+                      break
+          assert end is not None
+          body = text[marker:end]
+          assert body.count('property_set("sys.usb.ffs.ready", "0");') == 2
+          assert body.count('property_set("j720f.usb.rebind_req", "adb");') == 2
+          assert 'execl("/sbin/recovery", "recovery", "--adbd"' in body
+          assert "FUSE_SIDELOAD_HOST_PATHNAME" in body
+          assert "stop_adbd();" in body
+          assert "maybe_restart_adbd();" in body
+          PYVERIFY
+          grep -Fq 'property_set("j720f.usb.rebind_req", "adb");' "$ADB_INSTALL"
+          git -C "$RECOVERY" diff -- adb_install.cpp
+
       - name: Correct legacy TWRP MTP date-property serialization
         shell: bash
         run: |
