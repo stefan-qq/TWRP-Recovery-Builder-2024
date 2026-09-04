@@ -137,6 +137,30 @@ jobs:
           grep -Fq 'MTP_PROPERTY_ORIGINAL_RELEASE_DATE' "$MTP_STORAGE"
           git -C "$RECOVERY" diff -- mtp/legacy/MtpStorage.cpp
 
+      - name: Accept libmtp storage-root parent zero for MTP uploads
+        shell: bash
+        run: |
+          set -euxo pipefail
+          RECOVERY=workspace/bootable/recovery
+          MTP_SERVER="$RECOVERY/mtp/legacy/MtpServer.cpp"
+          python3 tools/patch_j720f_twrp_mtp_root_parent.py --recovery "$RECOVERY"
+          git -C "$RECOVERY" diff --check
+          grep -Fq 'if (parent == MTP_PARENT_ROOT || parent == 0) {' "$MTP_SERVER"
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          path = Path("workspace/bootable/recovery/mtp/legacy/MtpServer.cpp")
+          text = path.read_text()
+          start = text.index("MtpResponseCode MtpServer::doSendObjectInfo() {")
+          end = text.index("MtpResponseCode MtpServer::doSendObject() {", start)
+          body = text[start:end]
+          assert body.count("if (parent == MTP_PARENT_ROOT || parent == 0) {") == 1
+          assert "path = storage->getPath();" in body
+          assert "parent = 0;" in body
+          assert "mDatabase->getObjectFilePath(parent" in body
+          assert "MTP_RESPONSE_INVALID_PARENT_OBJECT" in body
+          PYVERIFY
+          git -C "$RECOVERY" diff -- mtp/legacy/MtpServer.cpp
+
       - name: Bypass broken Samsung kernel MTP receive-file ioctl
         shell: bash
         run: |
