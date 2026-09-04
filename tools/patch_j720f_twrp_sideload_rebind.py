@@ -1,43 +1,56 @@
 #!/usr/bin/env python3
 import argparse
+import re
 from pathlib import Path
 
 FUNCTION_HEADER = """int
 apply_from_adb(const char* install_file, pid_t* child_pid) {"""
-ENTRY_OLD = '''    stop_adbd();
-    set_usb_driver(true);'''
-ENTRY_NEW = '''    stop_adbd();
-    // The normal recovery adbd stop clears ffs.ready, but the sideload
-    // minadbd child is not an init service. Queue the existing J720F one-shot
-    // ADB composition before minadbd publishes FunctionFS ready so the Samsung
-    // android_usb/ConfigFS gate is replayed exactly once for sideload.
-    property_set("sys.usb.ffs.ready", "0");
-    property_set("j720f.usb.rebind_req", "adb");
-    set_usb_driver(true);'''
-
-CLEANUP_OLD = '''    set_usb_driver(false);
-    maybe_restart_adbd();'''
-CLEANUP_NEW = '''    set_usb_driver(false);
-    // minadbd is forked directly rather than managed as init.svc.adbd, so its
-    // exit does not run the init action that normally clears ffs.ready. Reset
-    // that stale state and queue a fresh one-shot bind for the normal adbd.
-    property_set("sys.usb.ffs.ready", "0");
-    property_set("j720f.usb.rebind_req", "adb");
-    maybe_restart_adbd();'''
-
 CHILD_EXEC = 'execl("/sbin/recovery", "recovery", "--adbd"'
 FUSE_HOST = 'FUSE_SIDELOAD_HOST_PATHNAME'
 FUSE_EXIT = 'FUSE_SIDELOAD_HOST_EXIT_PATHNAME'
+READY = 'property_set("sys.usb.ffs.ready", "0");'
+REQUEST = 'property_set("j720f.usb.rebind_req", "adb");'
+
+ENTRY_LINES = (
+    '// The normal recovery adbd stop clears ffs.ready, but the sideload',
+    '// minadbd child is not an init service. Queue the existing J720F one-shot',
+    '// ADB composition before minadbd publishes FunctionFS ready so the Samsung',
+    '// android_usb/ConfigFS gate is replayed exactly once for sideload.',
+    READY,
+    REQUEST,
+)
+
+CLEANUP_LINES = (
+    '// minadbd is forked directly rather than managed as init.svc.adbd, so its',
+    '// exit does not run the init action that normally clears ffs.ready. Reset',
+    '// that stale state and queue a fresh one-shot bind for the normal adbd.',
+    READY,
+    REQUEST,
+)
 
 
-def require_pinned_shape(text: str) -> tuple[int, int]:
-    """Validate stable anchors in the exact TWRP 3.3 source pinned by CI.
+def find_statement(text: str, statement: str, start: int, end: int, label: str) -> re.Match[str]:
+    """Find one live statement line in a source range, ignoring indentation.
 
-    Do not try to parse the whole C++ function. This source intentionally keeps
-    an older apply_from_adb implementation inside a block comment, which made
-    brace/definition scanning unnecessarily fragile. The two live statement
-    pairs we patch are unique in the pinned file and are safer anchors.
+    The pinned TWRP file uses one-space indentation in this function, while the
+    earlier patcher accidentally assumed four spaces. Restricting each search to
+    a known live section also avoids the historical apply_from_adb snippet kept
+    inside a block comment before the sideload child is launched.
     """
+    pattern = re.compile(
+        rf'^(?P<indent>[ \t]*){re.escape(statement)}[ \t]*$',
+        re.MULTILINE,
+    )
+    matches = list(pattern.finditer(text, start, end))
+    if len(matches) != 1:
+        raise SystemExit(
+            f'adb_install.cpp: expected exactly one live {label}, found {len(matches)}'
+        )
+    return matches[0]
+
+
+def require_pinned_shape(text: str) -> tuple[int, int, int, int]:
+    """Return stable bounds around the live TWRP 3.3 sideload implementation."""
     if text.count(FUNCTION_HEADER) != 1:
         raise SystemExit(
             'adb_install.cpp: pinned apply_from_adb signature must occur exactly once'
@@ -48,47 +61,68 @@ def require_pinned_shape(text: str) -> tuple[int, int]:
         child_exec = text.index(CHILD_EXEC, header)
         fuse_host = text.index(FUSE_HOST, child_exec)
         fuse_exit = text.index(FUSE_EXIT, fuse_host)
+        final_return = text.index('return result;', fuse_exit)
     except ValueError as exc:
         raise SystemExit(f'adb_install.cpp: pinned sideload anchor missing: {exc}')
 
-    if not (header < child_exec < fuse_host < fuse_exit):
+    if not (header < child_exec < fuse_host < fuse_exit < final_return):
         raise SystemExit('adb_install.cpp: pinned sideload anchors are out of order')
-    return header, child_exec
+    return header, child_exec, fuse_exit, final_return
 
 
 def verify_patched(text: str) -> None:
-    header, child_exec = require_pinned_shape(text)
+    header, child_exec, fuse_exit, final_return = require_pinned_shape(text)
 
-    ready = 'property_set("sys.usb.ffs.ready", "0");'
-    request = 'property_set("j720f.usb.rebind_req", "adb");'
-    if text.count(ready) != 2:
+    if text.count(READY) != 2:
         raise SystemExit('post-patch verification failed: expected two explicit ffs.ready resets')
-    if text.count(request) != 2:
+    if text.count(REQUEST) != 2:
         raise SystemExit('post-patch verification failed: expected two one-shot ADB rebind requests')
 
-    try:
-        entry_stop = text.index('    stop_adbd();', header)
-        entry_ready = text.index(ready, entry_stop)
-        entry_req = text.index(request, entry_ready)
-        entry_enable = text.index('    set_usb_driver(true);', entry_req)
+    entry_stop = find_statement(text, 'stop_adbd();', header, child_exec, 'sideload stop_adbd()')
+    entry_enable = find_statement(
+        text, 'set_usb_driver(true);', entry_stop.end(), child_exec,
+        'sideload set_usb_driver(true)'
+    )
+    entry_ready = find_statement(
+        text, READY, entry_stop.end(), entry_enable.start(),
+        'sideload-entry ffs.ready reset'
+    )
+    entry_request = find_statement(
+        text, REQUEST, entry_ready.end(), entry_enable.start(),
+        'sideload-entry rebind request'
+    )
 
-        cleanup_disable = text.index('    set_usb_driver(false);', child_exec)
-        cleanup_ready = text.index(ready, cleanup_disable)
-        cleanup_req = text.index(request, cleanup_ready)
-        restart = text.index('    maybe_restart_adbd();', cleanup_req)
-    except ValueError as exc:
-        raise SystemExit(f'post-patch verification failed: expected statement missing: {exc}')
+    cleanup_disable = find_statement(
+        text, 'set_usb_driver(false);', fuse_exit, final_return,
+        'sideload cleanup set_usb_driver(false)'
+    )
+    cleanup_restart = find_statement(
+        text, 'maybe_restart_adbd();', cleanup_disable.end(), final_return,
+        'sideload cleanup maybe_restart_adbd()'
+    )
+    cleanup_ready = find_statement(
+        text, READY, cleanup_disable.end(), cleanup_restart.start(),
+        'sideload-cleanup ffs.ready reset'
+    )
+    cleanup_request = find_statement(
+        text, REQUEST, cleanup_ready.end(), cleanup_restart.start(),
+        'sideload-cleanup rebind request'
+    )
 
-    if not (header < entry_stop < entry_ready < entry_req < entry_enable < child_exec):
+    if not (
+        header < entry_stop.start() < entry_ready.start() < entry_request.start()
+        < entry_enable.start() < child_exec
+    ):
         raise SystemExit('post-patch verification failed: sideload entry ordering is not safe')
-    if not (child_exec < cleanup_disable < cleanup_ready < cleanup_req < restart):
+    if not (
+        fuse_exit < cleanup_disable.start() < cleanup_ready.start()
+        < cleanup_request.start() < cleanup_restart.start() < final_return
+    ):
         raise SystemExit('post-patch verification failed: sideload cleanup ordering is not safe')
 
-    # The original consecutive statement pairs must be gone after insertion.
-    if ENTRY_OLD in text:
-        raise SystemExit('post-patch verification failed: unpatched sideload entry pair remains')
-    if CLEANUP_OLD in text:
-        raise SystemExit('post-patch verification failed: unpatched sideload cleanup pair remains')
+
+def format_insert(indent: str, lines: tuple[str, ...]) -> str:
+    return '\n' + '\n'.join(indent + line for line in lines)
 
 
 def main() -> None:
@@ -105,41 +139,48 @@ def main() -> None:
         raise SystemExit(f'missing pinned TWRP source: {path}')
 
     text = path.read_text()
-    require_pinned_shape(text)
+    header, child_exec, fuse_exit, final_return = require_pinned_shape(text)
 
     if args.verify_only:
         verify_patched(text)
         print(f'Verified J720F sideload FunctionFS rebind integration: {path}')
         return
 
-    if 'j720f.usb.rebind_req' in text:
+    if REQUEST in text or READY in text:
         raise SystemExit('J720F sideload FunctionFS rebind correction already appears to be applied')
 
-    entry_count = text.count(ENTRY_OLD)
-    cleanup_count = text.count(CLEANUP_OLD)
-    if entry_count != 1:
-        raise SystemExit(
-            'adb_install.cpp: expected exactly one live stop_adbd()/set_usb_driver(true) pair, '
-            f'found {entry_count}'
-        )
-    if cleanup_count != 1:
-        raise SystemExit(
-            'adb_install.cpp: expected exactly one live '
-            'set_usb_driver(false)/maybe_restart_adbd() pair, '
-            f'found {cleanup_count}'
-        )
+    entry_stop = find_statement(text, 'stop_adbd();', header, child_exec, 'sideload stop_adbd()')
+    entry_enable = find_statement(
+        text, 'set_usb_driver(true);', entry_stop.end(), child_exec,
+        'sideload set_usb_driver(true)'
+    )
+    if entry_stop.end() >= entry_enable.start():
+        raise SystemExit('adb_install.cpp: sideload entry anchors are out of order')
 
-    header = text.index(FUNCTION_HEADER)
-    entry = text.index(ENTRY_OLD)
-    child_exec = text.index(CHILD_EXEC, header)
-    cleanup = text.index(CLEANUP_OLD)
-    if not (header < entry < child_exec < cleanup):
-        raise SystemExit('adb_install.cpp: live sideload patch anchors are out of order')
+    cleanup_disable = find_statement(
+        text, 'set_usb_driver(false);', fuse_exit, final_return,
+        'sideload cleanup set_usb_driver(false)'
+    )
+    cleanup_restart = find_statement(
+        text, 'maybe_restart_adbd();', cleanup_disable.end(), final_return,
+        'sideload cleanup maybe_restart_adbd()'
+    )
+    if cleanup_disable.end() >= cleanup_restart.start():
+        raise SystemExit('adb_install.cpp: sideload cleanup anchors are out of order')
 
-    patched = text.replace(ENTRY_OLD, ENTRY_NEW, 1)
-    patched = patched.replace(CLEANUP_OLD, CLEANUP_NEW, 1)
+    # Insert from the later source position first so the earlier offset remains valid.
+    patched = (
+        text[:cleanup_disable.end()]
+        + format_insert(cleanup_disable.group('indent'), CLEANUP_LINES)
+        + text[cleanup_disable.end():]
+    )
+    patched = (
+        patched[:entry_stop.end()]
+        + format_insert(entry_stop.group('indent'), ENTRY_LINES)
+        + patched[entry_stop.end():]
+    )
+
     verify_patched(patched)
-
     path.write_text(patched)
     print(f'Integrated J720F one-shot FunctionFS rebind with TWRP ADB sideload: {path}')
 
