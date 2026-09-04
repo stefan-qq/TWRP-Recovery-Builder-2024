@@ -130,29 +130,15 @@ jobs:
           python3 tools/patch_j720f_twrp_sideload_rebind.py --recovery "$RECOVERY"
           git -C "$RECOVERY" diff --check
           python3 - <<'PYVERIFY'
-          import re
           from pathlib import Path
           path = Path("workspace/bootable/recovery/adb_install.cpp")
           text = path.read_text()
-          pattern = re.compile(
-              r'(?m)^[ \t]*(?:int[ \t]*\n[ \t]*|int[ \t]+)apply_from_adb[ \t]*\([^;{}]*\)[ \t]*\{'
-          )
-          matches = list(pattern.finditer(text))
-          assert len(matches) == 1, f"expected one apply_from_adb definition, found {len(matches)}"
-          marker = matches[0].start()
-          brace = text.index("{", matches[0].start(), matches[0].end())
-          depth = 0
-          end = None
-          for pos in range(brace, len(text)):
-              if text[pos] == "{":
-                  depth += 1
-              elif text[pos] == "}":
-                  depth -= 1
-                  if depth == 0:
-                      end = pos + 1
-                      break
-          assert end is not None
-          body = text[marker:end]
+          header = "int\napply_from_adb(const char* install_file, pid_t* child_pid) {"
+          tail = "    return result;\n}"
+          assert text.count(header) == 1, "pinned apply_from_adb signature must be unique"
+          marker = text.index(header)
+          end_marker = text.index(tail, marker + len(header))
+          body = text[marker:end_marker + len(tail)]
           assert body.count('property_set("sys.usb.ffs.ready", "0");') == 2
           assert body.count('property_set("j720f.usb.rebind_req", "adb");') == 2
           assert 'execl("/sbin/recovery", "recovery", "--adbd"' in body
