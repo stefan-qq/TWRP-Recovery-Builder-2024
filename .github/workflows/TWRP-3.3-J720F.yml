@@ -185,6 +185,32 @@ jobs:
           PYVERIFY
           git -C "$RECOVERY" diff -- mtp/legacy/MtpServer.cpp
 
+      - name: Bypass broken Samsung kernel MTP send-file ioctl
+        shell: bash
+        run: |
+          set -euxo pipefail
+          RECOVERY=workspace/bootable/recovery
+          MTP_SERVER="$RECOVERY/mtp/legacy/MtpServer.cpp"
+          python3 tools/patch_j720f_twrp_mtp_send_userspace.py --recovery "$RECOVERY"
+          git -C "$RECOVERY" diff --check
+          grep -Fq 'j720fSendFileInUserspace' "$MTP_SERVER"
+          grep -Fq 'J720F userspace send returned %d' "$MTP_SERVER"
+          grep -Fq 'j720fPutUInt16LE(buffer + 4, 2);' "$MTP_SERVER"
+          grep -Fq 'write(mtpFd, buffer, length)' "$MTP_SERVER"
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          path = Path("workspace/bootable/recovery/mtp/legacy/MtpServer.cpp")
+          text = path.read_text()
+          start = text.index("MtpResponseCode MtpServer::doGetObject() {")
+          end = text.index("MtpResponseCode MtpServer::doGetThumb() {", start)
+          body = text[start:end]
+          assert "ioctl(mFD, MTP_SEND_FILE_WITH_HEADER, (unsigned long)&mfr)" not in body
+          assert "j720fSendFileInUserspace(mFD, mfr.fd, mfr.length, mfr.command, mfr.transaction_id)" in body
+          assert 'MTPD("J720F userspace send returned %d\\n", ret);' in body
+          assert "errno == ECANCELED" in body
+          PYVERIFY
+          git -C "$RECOVERY" diff -- mtp/legacy/MtpServer.cpp
+
       - name: Patch legacy TWRP ORS FIFO paths
         shell: bash
         run: |
