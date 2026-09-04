@@ -129,23 +129,8 @@ jobs:
           ADB_INSTALL="$RECOVERY/adb_install.cpp"
           python3 tools/patch_j720f_twrp_sideload_rebind.py --recovery "$RECOVERY"
           git -C "$RECOVERY" diff --check
-          python3 - <<'PYVERIFY'
-          from pathlib import Path
-          path = Path("workspace/bootable/recovery/adb_install.cpp")
-          text = path.read_text()
-          header = "int\napply_from_adb(const char* install_file, pid_t* child_pid) {"
-          tail = "    return result;\n}"
-          assert text.count(header) == 1, "pinned apply_from_adb signature must be unique"
-          marker = text.index(header)
-          end_marker = text.index(tail, marker + len(header))
-          body = text[marker:end_marker + len(tail)]
-          assert body.count('property_set("sys.usb.ffs.ready", "0");') == 2
-          assert body.count('property_set("j720f.usb.rebind_req", "adb");') == 2
-          assert 'execl("/sbin/recovery", "recovery", "--adbd"' in body
-          assert "FUSE_SIDELOAD_HOST_PATHNAME" in body
-          assert "stop_adbd();" in body
-          assert "maybe_restart_adbd();" in body
-          PYVERIFY
+          python3 tools/patch_j720f_twrp_sideload_rebind.py \
+            --recovery "$RECOVERY" --verify-only
           grep -Fq 'property_set("j720f.usb.rebind_req", "adb");' "$ADB_INSTALL"
           git -C "$RECOVERY" diff -- adb_install.cpp
 
