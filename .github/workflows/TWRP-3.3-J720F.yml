@@ -635,8 +635,13 @@ jobs:
           grep -q 'setprop j720f.usb.mtp_create_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'on property:j720f.usb.rebind_req=adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
           grep -q 'on property:j720f.usb.rebind_req=mtp && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
-          grep -q 'on property:sys.usb.config=adb && property:sys.usb.configfs=1 && property:j720f.usb.ffs_mounted=1 && property:init.svc.adbd=stopped' recovery/root/init.recovery.usb.rc
-          reject_grep 'ADB start trigger can queue a redundant restart during sideload handoff' -q '^on property:sys.usb.config=adb && property:sys.usb.configfs=1 && property:j720f.usb.ffs_mounted=1$' recovery/root/init.recovery.usb.rc
+          reject_grep 'Runtime sys.usb.config=adb must not start normal adbd during sideload handoff' -q '^on property:sys.usb.config=adb && property:sys.usb.configfs=1 && property:j720f.usb.ffs_mounted=1' recovery/root/init.recovery.usb.rc
+          awk '
+            /^on boot$/ { in_boot=1; next }
+            /^on / && in_boot { exit }
+            in_boot && /^[[:space:]]+start adbd$/ { found=1 }
+            END { exit(found ? 0 : 1) }
+          ' recovery/root/init.recovery.usb.rc
           reject_grep 'ADB bind still replays directly on FunctionFS-ready changes' -q 'on property:sys.usb.config=adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
           reject_grep 'MTP bind still replays directly on FunctionFS-ready changes' -q 'on property:sys.usb.config=mtp,adb && property:sys.usb.ffs.ready=1' recovery/root/init.recovery.usb.rc
           grep -q 'write /sys/class/android_usb/android0/functions mtp,adb' recovery/root/init.recovery.usb.rc
