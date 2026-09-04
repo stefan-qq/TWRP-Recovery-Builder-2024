@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+import re
 from pathlib import Path
 
-FUNCTION_NAME = 'apply_from_adb('
+FUNCTION_DEFINITION_RE = re.compile(
+    r'(?m)^[ \t]*(?:int[ \t]*\n[ \t]*|int[ \t]+)apply_from_adb[ \t]*\([^;{}]*\)[ \t]*\{'
+)
 ENTRY_OLD = '''    stop_adbd();
     set_usb_driver(true);'''
 ENTRY_NEW = '''    stop_adbd();
@@ -26,13 +29,21 @@ CLEANUP_NEW = '''    set_usb_driver(false);
 
 
 def find_function(text: str) -> tuple[int, int]:
-    marker = text.find(FUNCTION_NAME)
-    if marker < 0:
-        raise SystemExit('apply_from_adb(): function marker not found')
-    if text.find(FUNCTION_NAME, marker + 1) >= 0:
-        raise SystemExit('apply_from_adb(): expected exactly one function definition marker')
+    # adb_install.cpp contains other textual mentions of apply_from_adb(), so
+    # locate the actual C++ definition rather than requiring the token to occur
+    # only once in the whole file. Requiring an `int` return type and an opening
+    # function brace excludes declarations, calls, and comments while still
+    # accepting the legacy style where `int` is on the preceding line.
+    matches = list(FUNCTION_DEFINITION_RE.finditer(text))
+    if len(matches) != 1:
+        raise SystemExit(
+            'apply_from_adb(): expected exactly one function definition, '
+            f'found {len(matches)}'
+        )
 
-    brace = text.find('{', marker)
+    match = matches[0]
+    marker = match.start()
+    brace = text.find('{', match.start(), match.end())
     if brace < 0:
         raise SystemExit('apply_from_adb(): opening brace not found')
 
