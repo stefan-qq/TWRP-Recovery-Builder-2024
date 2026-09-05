@@ -134,6 +134,22 @@ jobs:
           grep -Fq 'property_set("j720f.usb.rebind_req", "adb");' "$ADB_INSTALL"
           git -C "$RECOVERY" diff -- adb_install.cpp
 
+      - name: Correct stale J720F RTC from recovery build-time floor
+        shell: bash
+        run: |
+          set -euxo pipefail
+          RECOVERY=workspace/bootable/recovery
+          TWRP_FUNCTIONS="$RECOVERY/twrp-functions.cpp"
+          python3 tools/patch_j720f_twrp_rtc_build_floor.py --recovery "$RECOVERY"
+          git -C "$RECOVERY" diff --check
+          python3 tools/patch_j720f_twrp_rtc_build_floor.py \
+            --recovery "$RECOVERY" --verify-only
+          grep -Fq 'ro.bootimage.build.date.utc' "$TWRP_FUNCTIONS"
+          grep -Fq '/sys/class/rtc/rtc0/since_epoch' "$TWRP_FUNCTIONS"
+          grep -Fq '/sbin/hwclock -w -u -f /dev/rtc0' "$TWRP_FUNCTIONS"
+          grep -Fq 'J720F RTC build-floor:' "$TWRP_FUNCTIONS"
+          git -C "$RECOVERY" diff -- twrp-functions.cpp
+
       - name: Correct legacy TWRP MTP date-property serialization
         shell: bash
         run: |
