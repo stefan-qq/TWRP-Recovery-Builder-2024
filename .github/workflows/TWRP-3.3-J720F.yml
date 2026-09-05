@@ -1,4 +1,4 @@
-name: Build J720F TWRP 3.3 trace-readable data diagnostic
+name: Build J720F TWRP 3.3 release candidate
 
 on:
   workflow_dispatch:
@@ -265,7 +265,7 @@ jobs:
           reject_grep 'legacy /sbin ORS input path remains' -Fq '"/sbin/orsin"' "$ORS_HEADER"
           reject_grep 'legacy /sbin ORS output path remains' -Fq '"/sbin/orsout"' "$ORS_HEADER"
 
-      - name: Instrument native adbd, linker and init tracing
+      - name: Patch native adbd and Samsung FunctionFS selector
         shell: bash
         run: |
           set -euxo pipefail
@@ -283,10 +283,11 @@ jobs:
               fi
             fi
           }
-          TRACE_DIR=workspace/j720f-build-diagnostics
+
+          PATCH_DIR=workspace/j720f-build-patches
           SYSTEM_CORE=workspace/system/core
           BIONIC=workspace/bionic
-          mkdir -p "$TRACE_DIR"
+          mkdir -p "$PATCH_DIR"
 
           SYSTEM_CORE_COMMIT="$(git -C "$SYSTEM_CORE" rev-parse HEAD)"
           SYSTEM_CORE_REMOTE_NAME="$(git -C "$SYSTEM_CORE" remote | head -n 1)"
@@ -302,167 +303,92 @@ jobs:
           echo "BIONIC_COMMIT=$BIONIC_COMMIT" >> "$GITHUB_ENV"
           echo "BIONIC_REPOSITORY=$BIONIC_REPOSITORY" >> "$GITHUB_ENV"
 
-          python3 tools/patch_j720f_adbd_usb_trace.py \
-            --system-core "$SYSTEM_CORE" \
-            --report "$TRACE_DIR/adbd-trace-patch-report.json"
           python3 tools/patch_j720f_adbd_force_ffs.py \
             --system-core "$SYSTEM_CORE" \
-            --report "$TRACE_DIR/adbd-force-ffs-patch-report.json"
+            --report "$PATCH_DIR/adbd-force-ffs-patch-report.json"
           python3 tools/patch_j720f_adbd_recovery_shell.py \
             --system-core "$SYSTEM_CORE" \
-            --report "$TRACE_DIR/adbd-recovery-shell-patch-report.json"
+            --report "$PATCH_DIR/adbd-recovery-shell-patch-report.json"
           python3 tools/patch_j720f_adbd_pty_exec_transition.py \
             --system-core "$SYSTEM_CORE" \
-            --report "$TRACE_DIR/adbd-pty-exec-transition-patch-report.json"
+            --report "$PATCH_DIR/adbd-pty-exec-transition-patch-report.json"
           python3 tools/patch_j720f_adbd_sync_worker.py \
             --system-core "$SYSTEM_CORE" \
-            --report "$TRACE_DIR/adbd-sync-worker-patch-report.json"
-          python3 tools/patch_j720f_linker_diag.py \
-            --bionic "$BIONIC" \
-            --report "$TRACE_DIR/linker-diag-patch-report.json"
-          python3 tools/patch_j720f_init_udc_trace.py \
+            --report "$PATCH_DIR/adbd-sync-worker-patch-report.json"
+          python3 tools/patch_j720f_init_ffs_selector.py \
             --system-core "$SYSTEM_CORE" \
-            --report "$TRACE_DIR/init-udc-trace-patch-report.json"
+            --report "$PATCH_DIR/init-ffs-selector-patch-report.json"
 
           git -C "$SYSTEM_CORE" diff --check
-          git -C "$BIONIC" diff --check
+          git -C "$BIONIC" diff --exit-code
           git -C "$SYSTEM_CORE" diff -- \
             adb/daemon/main.cpp \
             adb/usb_linux_client.cpp \
-            adb/adb_trace.cpp \
             adb/services.cpp \
             adb/shell_service.cpp \
             init/util.cpp \
-            > "$TRACE_DIR/system-core-adbd-direct-trace.patch"
-          test -s "$TRACE_DIR/system-core-adbd-direct-trace.patch"
-          git -C "$BIONIC" diff -- linker/linker.cpp \
-            > "$TRACE_DIR/bionic-linker-diag.patch"
-          test -s "$TRACE_DIR/bionic-linker-diag.patch"
+            > "$PATCH_DIR/system-core-j720f-release.patch"
+          test -s "$PATCH_DIR/system-core-j720f-release.patch"
 
-          cp "$SYSTEM_CORE/adb/daemon/main.cpp" \
-            "$TRACE_DIR/adbd-main.cpp.patched"
-          cp "$SYSTEM_CORE/adb/usb_linux_client.cpp" \
-            "$TRACE_DIR/usb_linux_client.cpp.patched"
-          cp "$SYSTEM_CORE/adb/adb_trace.cpp" \
-            "$TRACE_DIR/adb_trace.cpp.patched"
-          cp "$SYSTEM_CORE/adb/services.cpp" \
-            "$TRACE_DIR/services.cpp.patched"
-          cp "$SYSTEM_CORE/adb/shell_service.cpp" \
-            "$TRACE_DIR/shell_service.cpp.patched"
-          cp "$SYSTEM_CORE/init/util.cpp" \
-            "$TRACE_DIR/init-util.cpp.patched"
-          cp "$BIONIC/linker/linker.cpp" \
-            "$TRACE_DIR/linker.cpp.patched"
-          printf '%s\n' "$SYSTEM_CORE_COMMIT" \
-            > "$TRACE_DIR/system-core-commit.txt"
-          printf '%s\n' "$SYSTEM_CORE_REPOSITORY" \
-            > "$TRACE_DIR/system-core-repository.txt"
-          printf '%s\n' "$BIONIC_COMMIT" \
-            > "$TRACE_DIR/bionic-commit.txt"
-          printf '%s\n' "$BIONIC_REPOSITORY" \
-            > "$TRACE_DIR/bionic-repository.txt"
+          printf '%s\n' "$SYSTEM_CORE_COMMIT" > "$PATCH_DIR/system-core-commit.txt"
+          printf '%s\n' "$SYSTEM_CORE_REPOSITORY" > "$PATCH_DIR/system-core-repository.txt"
+          printf '%s\n' "$BIONIC_COMMIT" > "$PATCH_DIR/bionic-commit.txt"
+          printf '%s\n' "$BIONIC_REPOSITORY" > "$PATCH_DIR/bionic-repository.txt"
 
-          grep -Fq 'J720F_MAIN_USB_GATE' \
-            "$SYSTEM_CORE/adb/daemon/main.cpp"
-          grep -Fq 'J720F_MAIN_USB_DECISION' \
-            "$SYSTEM_CORE/adb/daemon/main.cpp"
-          grep -Fq '/tmp/J720F_ADBD_USB_TRACE.txt' \
-            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
-          grep -Fq 'event=usb_init_transport' \
-            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
-          grep -Fq 'event=usb_init_choice' \
-            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
-          grep -Fq 'event=v2_descriptor_write' \
-            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
-          grep -Fq 'event=ffs_ready_property_set' \
-            "$SYSTEM_CORE/adb/usb_linux_client.cpp"
-          grep -Fq '/tmp/J720F_ADBD_TRACE.txt' \
-            "$SYSTEM_CORE/adb/adb_trace.cpp"
-          grep -Fq 'J720F_ADB_RECOVERY_CHILD' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'J720F_SHELL_CHILD phase=pre_setcon_recovery' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq '"post_setcon_recovery"' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'selinux_android_setcon("u:r:recovery:s0")' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'J720F_ADB_PTY_RECOVERY_EXEC' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'setexeccon("u:r:recovery:s0")' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'phase=pty_setexec_recovery_pending' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'post_setexec_recovery_pending' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'J720F_ADB_SYNC_WORKER' \
-            "$SYSTEM_CORE/adb/services.cpp"
-          grep -Fq 'j720f_recovery_sync_service' \
-            "$SYSTEM_CORE/adb/services.cpp"
-          grep -Fq 'execve("/sbin/adbd", argv, envp)' \
-            "$SYSTEM_CORE/adb/services.cpp"
-          grep -Fq 'J720F_ADB_SYNC_FD=3' \
-            "$SYSTEM_CORE/adb/services.cpp"
-          grep -Fq 'adb_close(close_fd);' \
-            "$SYSTEM_CORE/adb/services.cpp"
+          grep -Fq 'J720F_FORCE_FFS_ENTRY' "$SYSTEM_CORE/adb/daemon/main.cpp"
+          grep -Fq 'property_get("j720f.usb.transport"' "$SYSTEM_CORE/adb/daemon/main.cpp"
+          grep -Fq 'native-android71-ffs' "$SYSTEM_CORE/adb/daemon/main.cpp"
+          grep -Fq 'J720F_FORCE_FFS_ENTRY' "$SYSTEM_CORE/adb/usb_linux_client.cpp"
+          grep -Fq 'native-android71-ffs' "$SYSTEM_CORE/adb/usb_linux_client.cpp"
+          grep -Fq 'J720F_ADB_RECOVERY_CHILD' "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'selinux_android_setcon("u:r:recovery:s0")' "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'J720F_ADB_PTY_RECOVERY_EXEC' "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'setexeccon("u:r:recovery:s0")' "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'J720F_ADB_SYNC_WORKER' "$SYSTEM_CORE/adb/services.cpp"
+          grep -Fq 'j720f_recovery_sync_service' "$SYSTEM_CORE/adb/services.cpp"
+          grep -Fq 'execve("/sbin/adbd", argv, envp)' "$SYSTEM_CORE/adb/services.cpp"
+          grep -Fq 'J720F_ADB_SYNC_FD=3' "$SYSTEM_CORE/adb/services.cpp"
           reject_grep 'sync worker uses poisoned libc close macro' -Eq '^[[:space:]]*close\(close_fd\);' \
             "$SYSTEM_CORE/adb/services.cpp"
-          grep -Fq 'J720F_ADB_SYNC_WORKER phase=entry' \
-            "$SYSTEM_CORE/adb/daemon/main.cpp"
           grep -Fq 'file_sync_service(static_cast<int>(parsed_fd), nullptr)' \
             "$SYSTEM_CORE/adb/daemon/main.cpp"
           grep -Fq 'const std::string shell_command = "/sbin/sh";' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
           grep -Fq 'env["LD_LIBRARY_PATH"] = "/sbin"' \
             "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'env["SHELL"] = "/sbin/sh"' \
-            "$SYSTEM_CORE/adb/shell_service.cpp"
-          reject_grep 'superseded shell child setcon remains' -Fq 'selinux_android_setcon("u:r:shell:s0")' "$SYSTEM_CORE/adb/shell_service.cpp"
-          reject_grep 'superseded su child setcon remains' -Fq 'selinux_android_setcon("u:r:su:s0")' "$SYSTEM_CORE/adb/shell_service.cpp"
-          grep -Fq 'J720F_LINKER_DIAG' \
-            "$BIONIC/linker/linker.cpp"
-          grep -Fq 'J720F_LINKER_CRED phase=' \
-            "$BIONIC/linker/linker.cpp"
-          grep -Fq 'after_main_thread' \
-            "$BIONIC/linker/linker.cpp"
-          grep -Fq 'aux_uid=' \
-            "$BIONIC/linker/linker.cpp"
-          grep -Fq 'j720f_at_secure' \
-            "$BIONIC/linker/linker.cpp"
-          grep -Fq 'libc_mmap_exec' \
-            "$BIONIC/linker/linker.cpp"
-          grep -Fq 'J720F_INIT_UDC' \
-            "$SYSTEM_CORE/init/util.cpp"
-          grep -Fq 'J720F_UDC_CONTROL' \
-            "$SYSTEM_CORE/init/util.cpp"
-          grep -Fq 'J720F_UEVENT_SELECTOR' \
-            "$SYSTEM_CORE/init/util.cpp"
-          grep -Fq 'Function FS Gadget' \
-            "$SYSTEM_CORE/init/util.cpp"
-          grep -Fq '/sys/kernel/config/usb_gadget/g1/functions/acm.GS0' \
-            "$SYSTEM_CORE/init/util.cpp"
-          grep -Fq '/sys/kernel/config/usb_gadget/g1/UDC' \
-            "$SYSTEM_CORE/init/util.cpp"
-          if grep -Fq '/data/adb/adb-' "$SYSTEM_CORE/adb/adb_trace.cpp"; then
-            echo 'Old /data ADB trace path remains after instrumentation' >&2
-            exit 1
-          fi
+          grep -Fq 'env["SHELL"] = "/sbin/sh"' "$SYSTEM_CORE/adb/shell_service.cpp"
+          reject_grep 'superseded shell child setcon remains' -Fq \
+            'selinux_android_setcon("u:r:shell:s0")' "$SYSTEM_CORE/adb/shell_service.cpp"
+          reject_grep 'superseded su child setcon remains' -Fq \
+            'selinux_android_setcon("u:r:su:s0")' "$SYSTEM_CORE/adb/shell_service.cpp"
+          grep -Fq 'J720F_FFS_SELECTOR' "$SYSTEM_CORE/init/util.cpp"
+          grep -Fq 'Function FS Gadget' "$SYSTEM_CORE/init/util.cpp"
+
+          reject_grep 'adbd USB syscall tracing remains' -Fq 'J720F_USB_DIAG' "$SYSTEM_CORE/adb/usb_linux_client.cpp"
+          reject_grep 'adbd main success tracing remains' -Fq 'J720F_MAIN_USB_GATE' "$SYSTEM_CORE/adb/daemon/main.cpp"
+          reject_grep 'adbd main decision tracing remains' -Fq 'J720F_MAIN_USB_DECISION' "$SYSTEM_CORE/adb/daemon/main.cpp"
+          reject_grep 'shell credential success tracing remains' -Fq 'J720F_SHELL_CHILD phase=' "$SYSTEM_CORE/adb/shell_service.cpp"
+          reject_grep 'init UDC trace instrumentation remains' -Fq 'J720F_INIT_UDC' "$SYSTEM_CORE/init/util.cpp"
+          reject_grep 'init ACM control diagnostic remains' -Fq 'J720F_UDC_CONTROL' "$SYSTEM_CORE/init/util.cpp"
+          reject_grep 'init selector trace strings remain' -Fq 'J720F_UEVENT_SELECTOR' "$SYSTEM_CORE/init/util.cpp"
+          reject_grep 'init ACM A/B test remains' -Fq 'acm_same_g1' "$SYSTEM_CORE/init/util.cpp"
 
       - name: Patch donor recovery policy for targeted TWRP data access
         shell: bash
         run: |
           set -euxo pipefail
-          TRACE_DIR=workspace/j720f-build-diagnostics
+          PATCH_DIR=workspace/j720f-build-patches
           SEPOLICY=workspace/system/sepolicy
 
           python3 tools/patch_j720f_recovery_data_policy.py \
             --sepolicy "$SEPOLICY" \
-            --report "$TRACE_DIR/recovery-data-policy-patch-report.json"
+            --report "$PATCH_DIR/recovery-data-policy-patch-report.json"
 
           git -C "$SEPOLICY" diff --check
           git -C "$SEPOLICY" diff -- \
             recovery.te domain.te \
-            > "$TRACE_DIR/system-sepolicy-j720f-data.patch"
-          test -s "$TRACE_DIR/system-sepolicy-j720f-data.patch"
+            > "$PATCH_DIR/system-sepolicy-j720f-data.patch"
+          test -s "$PATCH_DIR/system-sepolicy-j720f-data.patch"
 
           if grep -q '^neverallow recovery data_file_type:' "$SEPOLICY/recovery.te"; then
             echo 'Recovery /data neverallow remains after patch' >&2
@@ -603,11 +529,10 @@ jobs:
           reject_grep 'superseded shell inherited fd rule remains' -q 'allow shell adbd:fd use;' sepolicy/adbd.te
           reject_grep 'superseded shell inherited socket rule remains' -q 'allow shell adbd:unix_stream_socket' sepolicy/adbd.te
           reject_grep 'adbd still has generic tmpfs write access' -q 'allow adbd tmpfs:' sepolicy/adbd.te
-          grep -q 'type j720f_adbd_trace_file, file_type;' sepolicy/j720f_trace.te
-          grep -q 'allow adbd j720f_adbd_trace_file:file create_file_perms;' sepolicy/j720f_trace.te
-          grep -q 'allow recovery j720f_adbd_trace_file:file r_file_perms;' sepolicy/j720f_trace.te
-          grep -Fq '/tmp/J720F_ADBD_USB_TRACE\.txt' sepolicy/file_contexts
-          grep -Fq '/tmp/J720F_ADBD_TRACE\.txt' sepolicy/file_contexts
+          test ! -e sepolicy/j720f_trace.te
+          reject_grep 'trace-file SELinux type remains' -Rq 'j720f_adbd_trace_file' sepolicy
+          reject_grep 'USB trace file_context remains' -Fq '/tmp/J720F_ADBD_USB_TRACE\.txt' sepolicy/file_contexts
+          reject_grep 'ADB trace file_context remains' -Fq '/tmp/J720F_ADBD_TRACE\.txt' sepolicy/file_contexts
           grep -q 'allow recovery system_data_file:dir create_dir_perms;' sepolicy/recovery.te
           grep -q 'allow recovery system_data_file:file create_file_perms;' sepolicy/recovery.te
           grep -q 'allow recovery media_rw_data_file:dir create_dir_perms;' sepolicy/recovery.te
@@ -638,8 +563,8 @@ jobs:
 
           test -L recovery/root/etc/fstab
           test "$(readlink recovery/root/etc/fstab)" = /tmp/fstab
-          test -x recovery/root/sbin/j720f_runtime_diag.sh
-          test -x recovery/root/sbin/j720f_collect_direct_usb_trace.sh
+          test ! -e recovery/root/sbin/j720f_runtime_diag.sh
+          test ! -e recovery/root/sbin/j720f_collect_direct_usb_trace.sh
           test ! -e recovery/root/sbin/postrecoveryboot.sh
           test ! -e recovery/root/sbin/j720f_rc231_diag.sh
           test ! -e recovery/root/sbin/j720f_usb_report.sh
@@ -668,16 +593,9 @@ jobs:
           grep -q 'write /sys/kernel/config/usb_gadget/g1/UDC ${sys.usb.controller}' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.transport native-android71-ffs' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.adbd_domain_only 1' recovery/root/init.recovery.usb.rc
-          grep -q 'setprop j720f.usb.direct_trace 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.pure_configfs 0' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.stock_android_usb_gate 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.stock_link_order 1' recovery/root/init.recovery.usb.rc
-          grep -q 'setprop persist.adb.trace_mask all' recovery/root/init.recovery.usb.rc
-          grep -q 'write /tmp/J720F_ADBD_USB_TRACE.txt J720F_USB_DIAG_INIT_PRECREATED' recovery/root/init.recovery.usb.rc
-          grep -q 'restorecon /tmp/J720F_ADBD_USB_TRACE.txt' recovery/root/init.recovery.usb.rc
-          grep -q 'write /tmp/J720F_ADBD_TRACE.txt J720F_ADBD_TRACE_INIT_PRECREATED' recovery/root/init.recovery.usb.rc
-          grep -q 'restorecon /tmp/J720F_ADBD_TRACE.txt' recovery/root/init.recovery.usb.rc
-          grep -q 'setprop j720f.usb.trace_precreated 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.ffs_mount_action 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.configfs_bind 1' recovery/root/init.recovery.usb.rc
           grep -q 'setprop j720f.usb.udc_bind_action 1' recovery/root/init.recovery.usb.rc
@@ -793,28 +711,13 @@ jobs:
           grep -Eq '^/dev/usb-ffs/adb/ep1[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
           grep -Eq '^/dev/usb-ffs/adb/ep2[[:space:]]+0600[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
           grep -Eq '^/dev/usb_mtp_gadget[[:space:]]+0660[[:space:]]+root[[:space:]]+root$' recovery/root/ueventd.samsungexynos7885.rc
-          grep -q 'service j7diag /sbin/sh /sbin/j720f_runtime_diag.sh' recovery/root/init.recovery.usb.rc
-          grep -q 'group root shell readproc' recovery/root/init.recovery.usb.rc
-          grep -q 'seclabel u:r:recovery:s0' recovery/root/init.recovery.usb.rc
-          grep -q 'start j7diag' recovery/root/init.recovery.usb.rc
-          grep -q 'J720F_RUNTIME_DIAGNOSTICS.txt' recovery/root/sbin/j720f_runtime_diag.sh
-          grep -q 'NATIVE ANDROID 7.1 RECOVERY ADBD' recovery/root/sbin/j720f_runtime_diag.sh
-          grep -q 'ADBD PROCESS / CONTEXT / FDS' recovery/root/sbin/j720f_runtime_diag.sh
-          grep -q 'pidof adbd' recovery/root/sbin/j720f_runtime_diag.sh
-          grep -q 'DIRECT ADBD FUNCTIONFS SYSCALL TRACE' recovery/root/sbin/j720f_runtime_diag.sh
-          grep -q '/tmp/J720F_ADBD_USB_TRACE.txt' recovery/root/sbin/j720f_runtime_diag.sh
-          grep -q '/tmp/J720F_ADBD_TRACE.txt' recovery/root/sbin/j720f_runtime_diag.sh
-          grep -q 'j720f_collect_direct_usb_trace.sh auto' recovery/root/sbin/j720f_runtime_diag.sh
-          grep -q 'J720F_DIRECT_USB_TRACE' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
-          grep -q 'trace_metadata.txt' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
-          grep -q 'data_access.txt' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
-          reject_grep 'diagnostic script still searches for /sbin/twrp' -q '/sbin/twrp' recovery/root/sbin/j720f_runtime_diag.sh
-          reject_grep 'diagnostic script still performs a mount' -q 'mount -t' recovery/root/sbin/j720f_runtime_diag.sh
-          reject_grep 'diagnostic script still stops services' -q 'ctl.stop' recovery/root/sbin/j720f_runtime_diag.sh
-          reject_grep 'diagnostic script still starts services' -q 'ctl.start' recovery/root/sbin/j720f_runtime_diag.sh
-          reject_grep 'collector performs a mount' -q 'mount -t' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
-          reject_grep 'collector stops services' -q 'ctl.stop' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
-          reject_grep 'collector starts services' -q 'ctl.start' recovery/root/sbin/j720f_collect_direct_usb_trace.sh
+          reject_grep 'release USB rc still contains direct-trace property' -q 'j720f.usb.direct_trace' recovery/root/init.recovery.usb.rc
+          reject_grep 'release USB rc still enables native ADB_TRACE' -q 'persist.adb.trace_mask' recovery/root/init.recovery.usb.rc
+          reject_grep 'release USB rc still creates USB trace file' -q 'J720F_ADBD_USB_TRACE.txt' recovery/root/init.recovery.usb.rc
+          reject_grep 'release USB rc still creates ADB trace file' -q 'J720F_ADBD_TRACE.txt' recovery/root/init.recovery.usb.rc
+          reject_grep 'release USB rc still contains trace-precreated property' -q 'j720f.usb.trace_precreated' recovery/root/init.recovery.usb.rc
+          reject_grep 'release USB rc still contains runtime diagnostic service' -q 'service j7diag' recovery/root/init.recovery.usb.rc
+          reject_grep 'release USB rc still contains runtime diagnostic trigger' -q 'j720f.diag.triggered\|start j7diag' recovery/root/init.recovery.usb.rc
 
       - name: Build source TWRP 3.3 in the proven donor environment
         shell: bash
@@ -868,10 +771,10 @@ jobs:
           test -x "$ANALYZE"
           reject_grep 'compiled policy makes init permissive' -Eq '^[[:space:]]*permissive[[:space:]]+init;' "$POLICY_CONF"
           grep -Fq 'type twrp_prop, property_type;' "$POLICY_CONF"
-          grep -E '^(allow|dontaudit) adbd (functionfs|ffs_prop|twrp_prop|tmpfs|rootfs|j720f_adbd_trace_file)' "$POLICY_CONF" \
+          grep -E '^(allow|dontaudit) adbd (functionfs|ffs_prop|twrp_prop|tmpfs|rootfs)' "$POLICY_CONF" \
             | tee "$OUT/sepolicy-adbd-usb-rules.txt"
-          grep -E '^allow (init|adbd|recovery) (j720f_adbd_trace_file|system_data_file|media_rw_data_file)' "$POLICY_CONF" \
-            | tee "$OUT/sepolicy-j720f-data-trace-rules.txt"
+          grep -E '^allow recovery (system_data_file|media_rw_data_file)' "$POLICY_CONF" \
+            | tee "$OUT/sepolicy-j720f-data-rules.txt"
           grep -q '^allow adbd functionfs:file {' "$POLICY_CONF"
           grep -q '^allow adbd ffs_prop:property_service set;' "$POLICY_CONF"
           grep -q '^allow adbd twrp_prop:file ' "$POLICY_CONF"
@@ -899,8 +802,7 @@ jobs:
             exit 1
           fi
           echo 'Verified: adbd has no generic tmpfs write or execute access'
-          grep -q '^allow adbd j720f_adbd_trace_file:file ' "$POLICY_CONF"
-          grep -q '^allow recovery j720f_adbd_trace_file:file ' "$POLICY_CONF"
+          reject_grep 'compiled policy still contains trace-file type' -q 'j720f_adbd_trace_file' "$POLICY_CONF"
           grep -q '^allow recovery system_data_file:dir ' "$POLICY_CONF"
           grep -q '^allow recovery system_data_file:file ' "$POLICY_CONF"
           grep -q '^allow recovery media_rw_data_file:dir ' "$POLICY_CONF"
@@ -932,22 +834,12 @@ jobs:
           grep -aFq '/dev/usb-ffs/adb/ep1' "$OUT/recovery/root/sbin/adbd"
           grep -aFq '/dev/usb-ffs/adb/ep2' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'sys.usb.ffs.ready' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq '/tmp/J720F_ADBD_USB_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F_USB_DIAG' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F_MAIN_USB_GATE' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F_MAIN_USB_DECISION' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'event=usb_init_transport' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'event=usb_init_choice' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'event=v2_descriptor_write' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'event=ffs_ready_property_set' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F_SHELL_CHILD phase=pre_setcon_recovery' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'post_setcon_recovery' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'j720f.usb.transport' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'native-android71-ffs' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'u:r:recovery:s0' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq '/sbin/sh' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_CHILD_RECOVERY_SELCON failed' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F PTY setexeccon' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'phase=pty_setexec_recovery_pending' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'post_setexec_recovery_pending' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F_ADB_SYNC_WORKER' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_ADB_SYNC_FD' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F adb command child lost root before recovery setcon' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F adb child lost UID/GID 0 before exec' "$OUT/recovery/root/sbin/adbd"
@@ -955,14 +847,20 @@ jobs:
           reject_grep 'built adbd still contains child su handoff' -aFq 'J720F_CHILD_SU_SELCON failed' "$OUT/recovery/root/sbin/adbd"
           grep -Fq 'service adbd /sbin/adbd --device_banner=recovery' "$OUT/recovery/root/init.rc"
           reject_grep 'built ramdisk still moves whole adbd daemon to root_seclabel' -Eq '^[[:space:]]*service[[:space:]]+adbd[[:space:]].*--root_seclabel=' "$OUT/recovery/root/init.rc"
-          grep -aFq 'J720F_LINKER_DIAG' "$OUT/recovery/root/sbin/linker64"
-          grep -aFq 'J720F_LINKER_CRED' "$OUT/recovery/root/sbin/linker64"
-          grep -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"
-          grep -aFq 'J720F_UDC_CONTROL' "$OUT/recovery/root/init"
-          grep -aFq 'J720F_UEVENT_SELECTOR' "$OUT/recovery/root/init"
           grep -aFq 'Function FS Gadget' "$OUT/recovery/root/init"
-          grep -aFq 'acm_same_g1' "$OUT/recovery/root/init"
-          reject_grep 'instrumented adbd still embeds /data ADB trace path' -aFq '/data/adb/adb-' "$OUT/recovery/root/sbin/adbd"
+
+          reject_grep 'release adbd still contains USB syscall tracing' -aFq '/tmp/J720F_ADBD_USB_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
+          reject_grep 'release adbd still contains USB diagnostic marker' -aFq 'J720F_USB_DIAG' "$OUT/recovery/root/sbin/adbd"
+          reject_grep 'release adbd still contains main USB gate trace' -aFq 'J720F_MAIN_USB_GATE' "$OUT/recovery/root/sbin/adbd"
+          reject_grep 'release adbd still contains main USB decision trace' -aFq 'J720F_MAIN_USB_DECISION' "$OUT/recovery/root/sbin/adbd"
+          reject_grep 'release adbd still contains native tmpfs trace path' -aFq '/tmp/J720F_ADBD_TRACE.txt' "$OUT/recovery/root/sbin/adbd"
+          reject_grep 'release adbd still contains shell credential success trace' -aFq 'J720F_SHELL_CHILD phase=' "$OUT/recovery/root/sbin/adbd"
+          reject_grep 'release linker still contains credential diagnostics' -aFq 'J720F_LINKER_CRED' "$OUT/recovery/root/sbin/linker64"
+          reject_grep 'release linker still contains diagnostic marker' -aFq 'J720F_LINKER_DIAG' "$OUT/recovery/root/sbin/linker64"
+          reject_grep 'release init still contains UDC trace marker' -aFq 'J720F_INIT_UDC' "$OUT/recovery/root/init"
+          reject_grep 'release init still contains ACM control diagnostic' -aFq 'J720F_UDC_CONTROL' "$OUT/recovery/root/init"
+          reject_grep 'release init still contains selector trace marker' -aFq 'J720F_UEVENT_SELECTOR' "$OUT/recovery/root/init"
+          reject_grep 'release init still contains ACM A/B test' -aFq 'acm_same_g1' "$OUT/recovery/root/init"
           test ! -e "$OUT/recovery/root/system/bin/adbd"
           test ! -e "$OUT/recovery/root/system/bin/linker64"
           test ! -e "$OUT/recovery/root/system/lib64/libadbd.so"
@@ -983,7 +881,7 @@ jobs:
           test -f "$IMAGE"
           test -x tools/patch_j720f_recovery_kernel_defex.py
           python3 tools/patch_j720f_recovery_kernel_defex.py "$IMAGE" \
-            --report workspace/j720f-build-diagnostics/kernel-defex-patch-report.json
+            --report workspace/j720f-build-patches/kernel-defex-patch-report.json
           python3 "$TREE/tools/finalize_samsung_recovery.py" "$IMAGE"
           python3 "$TREE/tools/audit_recovery.py" "$IMAGE" \
             --tree "$TREE" \
@@ -992,9 +890,9 @@ jobs:
             "$OUT/recovery-audit/sepolicy-permissive-domains.txt"
           cp "$OUT/sepolicy-adbd-usb-rules.txt" \
             "$OUT/recovery-audit/sepolicy-adbd-usb-rules.txt"
-          cp "$OUT/sepolicy-j720f-data-trace-rules.txt" \
-            "$OUT/recovery-audit/sepolicy-j720f-data-trace-rules.txt"
-          cp workspace/j720f-build-diagnostics/* \
+          cp "$OUT/sepolicy-j720f-data-rules.txt" \
+            "$OUT/recovery-audit/sepolicy-j720f-data-rules.txt"
+          cp workspace/j720f-build-patches/* \
             "$OUT/recovery-audit/"
           test "$(stat -c %s "$IMAGE")" -le "$RECOVERY_LIMIT"
 
@@ -1009,8 +907,9 @@ jobs:
           )
           {
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
-            echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
-            echo 'diagnostic=working USB/ADB transport plus raw/PTY shell and isolated sync-worker credential/context traces'
+            echo 'base=v11 UI/touch with hardware-proven plain-ext4 data access and native FunctionFS adbd'
+            echo 'release_candidate=true'
+            echo 'development_diagnostics=false'
             echo 'recovery_kernel=exact CUL1 stock kernel with two audited recovery-only patches: /sbin/adbd credential preservation and suppression of the automatic MMS438 boot self-test'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
@@ -1059,6 +958,6 @@ jobs:
             "$OUT/SHA256SUMS.txt" \
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "J720F TWRP 3.3 ADB + MTP validation ${{ github.run_id }}" \
-            --notes "Validation build: preserves the hardware-proven native Android 7.1 FunctionFS ADB parent/child architecture and the Samsung +0x154d18 ADB credential fix plus the +0x5c7950 MMS438 boot-self-test suppression, while retaining PID1-owned Samsung kernel mtp.0 ConfigFS switching for TWRP MTP through /dev/usb_mtp_gadget. Not a stable community release until hardware validation is complete." \
+            --title "J720F TWRP 3.3 release candidate ${{ github.run_id }}" \
+            --notes "Release candidate for unofficial TWRP 3.3 on SM-J720F/j7duolte. Development USB/linker/runtime diagnostics are removed while the hardware-proven FunctionFS ADB, MTP, sideload, touch, RTC and recovery-only kernel fixes are preserved. Stock Android 10 encrypted /data is a documented limitation and is not decrypted by this build." \
             --prerelease

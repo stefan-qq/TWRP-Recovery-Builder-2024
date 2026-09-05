@@ -230,12 +230,6 @@ static int j720f_maybe_run_recovery_sync_worker() {
     const bool root_ok = getuid() == 0 && geteuid() == 0 && getgid() == 0 && getegid() == 0;
     const bool context_ok = context_result == 0 && context != nullptr &&
                             strcmp(context, "u:r:recovery:s0") == 0;
-    fprintf(stderr,
-            "J720F_ADB_SYNC_WORKER phase=entry fd=%ld uid=%d euid=%d gid=%d egid=%d "
-            "context=%s context_errno=%d\n",
-            parsed_fd, static_cast<int>(getuid()), static_cast<int>(geteuid()),
-            static_cast<int>(getgid()), static_cast<int>(getegid()),
-            context != nullptr ? context : "<unavailable>", context_errno);
     if (context != nullptr) {
         freecon(context);
     }
@@ -298,6 +292,7 @@ def main() -> int:
         "target_context": TARGET_CONTEXT,
         "worker_fd_environment": ENV_NAME,
         "architecture": "service-thread setexeccon -> fork -> self-exec /sbin/adbd -> file_sync_service",
+        "success_path_diagnostics": False,
         "parent_adbd_stays_adbd": True,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)

@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""Use an exec-time recovery transition for PTY adb shell children on J720F.
-
-The hardware-proven raw shell path can dynamically setcon() after fork. A PTY
-child, however, already has a controlling terminal by that point and dies before
-the post-setcon marker. Arm an explicit recovery exec context on the adbd service
-thread before forkpty(), let the child inherit it, immediately clear it again in
-the parent, and keep the raw child on the proven dynamic setcon path.
-
-This preserves the parent adbd process/domain and all FunctionFS USB work.
-"""
+"""Use an exec-time recovery transition for PTY adb shell children on J720F."""
 
 from __future__ import annotations
 
@@ -46,10 +37,8 @@ def patch(text: str) -> str:
         }
     } else {
 '''
-    fork_replacement = '''    // J720F_ADB_PTY_RECOVERY_EXEC: PTY children cannot reliably perform the
-    // post-fork dynamic setcon used by raw shell children on this Samsung
-    // recovery kernel. Arm an exec-time transition on this service thread
-    // before forkpty(); the child inherits it and the parent clears it below.
+    fork_replacement = '''    // J720F_ADB_PTY_RECOVERY_EXEC: arm the recovery exec context before
+    // forkpty(); the PTY child inherits it and the parent clears it below.
     const bool j720f_pty_exec_transition = type_ == SubprocessType::kPty;
     if (j720f_pty_exec_transition) {
         errno = 0;
@@ -78,8 +67,7 @@ def patch(text: str) -> str:
     parent_clear_replacement = '''        pid_ = fork();
     }
 
-    // Only the forkpty child must retain the pending recovery exec context.
-    // Clear it immediately on the parent service thread, including fork error.
+    // Only the forkpty child retains the pending recovery exec context.
     if (j720f_pty_exec_transition && pid_ != 0) {
         const int j720f_fork_errno = errno;
         errno = 0;
@@ -102,10 +90,6 @@ def patch(text: str) -> str:
     setcon_anchor = '''        errno = 0;
         if (selinux_android_setcon("u:r:recovery:s0") < 0) {
             const int saved_errno = errno;
-            snprintf(j720f_child_diag, sizeof(j720f_child_diag),
-                     "J720F_CHILD_RECOVERY_SELCON failed errno=%d (%s)\\n",
-                     saved_errno, strerror(saved_errno));
-            WriteFdExactly(STDERR_FILENO, j720f_child_diag);
             WriteFdExactly(child_error_sfd.fd(), "J720F_CHILD_RECOVERY_SELCON failed: ");
             WriteFdExactly(child_error_sfd.fd(), strerror(saved_errno));
             child_error_sfd.Reset();
@@ -113,23 +97,10 @@ def patch(text: str) -> str:
         }
 
 '''
-    setcon_replacement = '''        if (j720f_pty_exec_transition) {
-            // Current context intentionally remains adbd until exec(). The
-            // pending setexeccon target is inherited from the pre-fork setup.
-            snprintf(j720f_child_diag, sizeof(j720f_child_diag),
-                     "J720F_SHELL_CHILD phase=pty_setexec_recovery_pending uid=%d euid=%d "
-                     "gid=%d egid=%d target=u:r:recovery:s0\\n",
-                     static_cast<int>(getuid()), static_cast<int>(geteuid()),
-                     static_cast<int>(getgid()), static_cast<int>(getegid()));
-            WriteFdExactly(STDERR_FILENO, j720f_child_diag);
-        } else {
+    setcon_replacement = '''        if (!j720f_pty_exec_transition) {
             errno = 0;
             if (selinux_android_setcon("u:r:recovery:s0") < 0) {
                 const int saved_errno = errno;
-                snprintf(j720f_child_diag, sizeof(j720f_child_diag),
-                         "J720F_CHILD_RECOVERY_SELCON failed errno=%d (%s)\\n",
-                         saved_errno, strerror(saved_errno));
-                WriteFdExactly(STDERR_FILENO, j720f_child_diag);
                 WriteFdExactly(child_error_sfd.fd(), "J720F_CHILD_RECOVERY_SELCON failed: ");
                 WriteFdExactly(child_error_sfd.fd(), strerror(saved_errno));
                 child_error_sfd.Reset();
@@ -139,23 +110,6 @@ def patch(text: str) -> str:
 
 '''
     text = replace_once(text, setcon_anchor, setcon_replacement, "raw-vs-PTY recovery handoff")
-
-    format_anchor = '''        snprintf(j720f_child_diag, sizeof(j720f_child_diag),
-                 "J720F_SHELL_CHILD phase=post_setcon_recovery uid=%d euid=%d gid=%d egid=%d "
-                 "context=%s context_errno=%d cenv_ld=%s shell=%s shell_stat=%d shell_stat_errno=%d "
-                 "shell_mode=%04o shell_uid=%d shell_gid=%d shell_access=%d shell_access_errno=%d\\n",
-                 static_cast<int>(getuid()), static_cast<int>(geteuid()),
-'''
-    format_replacement = '''        const char* j720f_post_phase = j720f_pty_exec_transition
-                ? "post_setexec_recovery_pending" : "post_setcon_recovery";
-        snprintf(j720f_child_diag, sizeof(j720f_child_diag),
-                 "J720F_SHELL_CHILD phase=%s uid=%d euid=%d gid=%d egid=%d "
-                 "context=%s context_errno=%d cenv_ld=%s shell=%s shell_stat=%d shell_stat_errno=%d "
-                 "shell_mode=%04o shell_uid=%d shell_gid=%d shell_access=%d shell_access_errno=%d\\n",
-                 j720f_post_phase,
-                 static_cast<int>(getuid()), static_cast<int>(geteuid()),
-'''
-    text = replace_once(text, format_anchor, format_replacement, "conditional post-handoff diagnostics")
 
     text = replace_once(
         text,
@@ -174,13 +128,13 @@ def patch(text: str) -> str:
         MARKER,
         'setexeccon("u:r:recovery:s0")',
         'setexeccon(nullptr)',
-        'phase=pty_setexec_recovery_pending',
-        'post_setexec_recovery_pending',
         'selinux_android_setcon("u:r:recovery:s0")',
     )
     for item in required:
         if item not in text:
             raise RuntimeError(f"patched shell_service.cpp missing required marker: {item}")
+    if "J720F_SHELL_CHILD phase=" in text:
+        raise RuntimeError("success-path shell credential diagnostics remain")
     return text
 
 
@@ -203,8 +157,9 @@ def main() -> int:
         "required_marker": MARKER,
         "target_context": TARGET_CONTEXT,
         "pty_transition": "setexeccon before forkpty, child inherits, parent clears",
-        "raw_transition": "existing post-fork selinux_android_setcon",
+        "raw_transition": "post-fork selinux_android_setcon",
         "parent_adbd_stays_adbd": True,
+        "success_path_diagnostics": False,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")

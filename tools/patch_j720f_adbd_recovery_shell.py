@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-"""Move only the Android 7.1 adb command child into TWRP recovery domain.
-
-Keep the parent adbd process in the hardware-proven UID/GID 0, u:r:adbd:s0
-FunctionFS architecture. After adbd forks a shell-service child, change only
-that child to u:r:recovery:s0 and execute the known ramdisk /sbin/sh directly.
-
-Hardware testing established why both halves are required on SM-J720F/CUL1:
-* the recovery-only kernel +0x154d18 patch preserves UID/GID 0 across exec; and
-* the native TWRP u:r:recovery:s0 domain can enumerate /, write /tmp and read
-  kmsg while a root u:r:adbd:s0 command child is still denied those operations.
-
-This keeps USB setup isolated in adbd while giving command execution the same
-SELinux domain as TWRP's working touchscreen terminal. Keep explicit /sbin
-runtime paths and linker diagnostics until the CI-built artifact is proven.
-Fail closed if donor anchors move.
-"""
+"""Move only Android 7.1 adb command children into the TWRP recovery domain."""
 
 from __future__ import annotations
 
@@ -24,7 +9,6 @@ import json
 from pathlib import Path
 
 MARKER = "J720F_ADB_RECOVERY_CHILD"
-CHILD_MARKER = "J720F_SHELL_CHILD"
 SHELL_PATH = "/sbin/sh"
 TARGET_CONTEXT = "u:r:recovery:s0"
 
@@ -57,15 +41,14 @@ def patch_shell_service(text: str) -> str:
     text = replace_once(
         text,
         '#include <log/log.h>\n',
-        '#include <log/log.h>\n#include <stdio.h>\n#include <selinux/android.h>\n#include <selinux/selinux.h>\n',
-        "diagnostic/libselinux includes",
+        '#include <log/log.h>\n#include <selinux/android.h>\n#include <selinux/selinux.h>\n',
+        "libselinux include",
     )
 
     text = replace_once(
         text,
         '    std::vector<std::string> joined_env;\n',
         '''    // Recovery executables and their shared libraries live in /sbin.
-    // Pass the recovery runtime paths explicitly to every command child.
     env["PATH"] = "/sbin:/system/bin";
     env["LD_LIBRARY_PATH"] = "/sbin";
     env["SHELL"] = "/sbin/sh";
@@ -77,36 +60,9 @@ def patch_shell_service(text: str) -> str:
 
     old = '        std::string shell_command;\n'
     new = r'''        // J720F_ADB_RECOVERY_CHILD: preserve the proven parent adbd USB domain,
-        // but move only this already-forked command child into TWRP's working
-        // u:r:recovery:s0 domain before executing the ramdisk shell.
-        const char* j720f_child_ld = "<absent>";
-        for (const char* item : cenv) {
-            if (item != nullptr && strncmp(item, "LD_LIBRARY_PATH=", 16) == 0) {
-                j720f_child_ld = item + 16;
-                break;
-            }
-        }
-
-        char* j720f_pre_context = nullptr;
-        errno = 0;
-        const int j720f_pre_getcon = getcon(&j720f_pre_context);
-        const int j720f_pre_getcon_errno = j720f_pre_getcon == 0 ? 0 : errno;
-
-        char j720f_child_diag[1024];
-        snprintf(j720f_child_diag, sizeof(j720f_child_diag),
-                 "J720F_SHELL_CHILD phase=pre_setcon_recovery uid=%d euid=%d gid=%d egid=%d "
-                 "context=%s context_errno=%d cenv_ld=%s\n",
-                 static_cast<int>(getuid()), static_cast<int>(geteuid()),
-                 static_cast<int>(getgid()), static_cast<int>(getegid()),
-                 j720f_pre_getcon == 0 && j720f_pre_context != nullptr ? j720f_pre_context : "<unavailable>",
-                 j720f_pre_getcon_errno, j720f_child_ld);
-        WriteFdExactly(STDERR_FILENO, j720f_child_diag);
-        if (j720f_pre_context != nullptr) {
-            freecon(j720f_pre_context);
-        }
-
+        // but move only this command child into TWRP's recovery domain.
         if (getuid() != 0 || geteuid() != 0 || getgid() != 0 || getegid() != 0) {
-            WriteFdExactly(child_error_sfd.fd(), "J720F adb command child lost root before recovery setcon");
+            WriteFdExactly(child_error_sfd.fd(), "J720F adb command child lost UID/GID 0 before recovery setcon");
             child_error_sfd.Reset();
             _Exit(1);
         }
@@ -114,54 +70,19 @@ def patch_shell_service(text: str) -> str:
         errno = 0;
         if (selinux_android_setcon("u:r:recovery:s0") < 0) {
             const int saved_errno = errno;
-            snprintf(j720f_child_diag, sizeof(j720f_child_diag),
-                     "J720F_CHILD_RECOVERY_SELCON failed errno=%d (%s)\n",
-                     saved_errno, strerror(saved_errno));
-            WriteFdExactly(STDERR_FILENO, j720f_child_diag);
             WriteFdExactly(child_error_sfd.fd(), "J720F_CHILD_RECOVERY_SELCON failed: ");
             WriteFdExactly(child_error_sfd.fd(), strerror(saved_errno));
             child_error_sfd.Reset();
             _Exit(1);
         }
 
-        char* j720f_post_context = nullptr;
-        errno = 0;
-        const int j720f_post_getcon = getcon(&j720f_post_context);
-        const int j720f_post_getcon_errno = j720f_post_getcon == 0 ? 0 : errno;
-
         const std::string shell_command = "/sbin/sh";
-        struct stat j720f_shell_st;
-        errno = 0;
-        const int j720f_shell_stat = stat(shell_command.c_str(), &j720f_shell_st);
-        const int j720f_shell_stat_errno = j720f_shell_stat == 0 ? 0 : errno;
-        errno = 0;
-        const int j720f_shell_access = access(shell_command.c_str(), X_OK);
-        const int j720f_shell_access_errno = j720f_shell_access == 0 ? 0 : errno;
-
-        snprintf(j720f_child_diag, sizeof(j720f_child_diag),
-                 "J720F_SHELL_CHILD phase=post_setcon_recovery uid=%d euid=%d gid=%d egid=%d "
-                 "context=%s context_errno=%d cenv_ld=%s shell=%s shell_stat=%d shell_stat_errno=%d "
-                 "shell_mode=%04o shell_uid=%d shell_gid=%d shell_access=%d shell_access_errno=%d\n",
-                 static_cast<int>(getuid()), static_cast<int>(geteuid()),
-                 static_cast<int>(getgid()), static_cast<int>(getegid()),
-                 j720f_post_getcon == 0 && j720f_post_context != nullptr ? j720f_post_context : "<unavailable>",
-                 j720f_post_getcon_errno, j720f_child_ld, shell_command.c_str(),
-                 j720f_shell_stat, j720f_shell_stat_errno,
-                 j720f_shell_stat == 0 ? static_cast<unsigned int>(j720f_shell_st.st_mode & 07777) : 0,
-                 j720f_shell_stat == 0 ? static_cast<int>(j720f_shell_st.st_uid) : -1,
-                 j720f_shell_stat == 0 ? static_cast<int>(j720f_shell_st.st_gid) : -1,
-                 j720f_shell_access, j720f_shell_access_errno);
-        WriteFdExactly(STDERR_FILENO, j720f_child_diag);
-        if (j720f_post_context != nullptr) {
-            freecon(j720f_post_context);
-        }
-
         if (getuid() != 0 || geteuid() != 0 || getgid() != 0 || getegid() != 0) {
             WriteFdExactly(child_error_sfd.fd(), "J720F recovery-domain adb child lost UID/GID 0 before exec");
             child_error_sfd.Reset();
             _Exit(1);
         }
-        if (j720f_shell_stat != 0 || j720f_shell_access != 0) {
+        if (access(shell_command.c_str(), X_OK) != 0) {
             WriteFdExactly(child_error_sfd.fd(), "J720F /sbin/sh is not executable in recovery child domain");
             child_error_sfd.Reset();
             _Exit(1);
@@ -182,13 +103,7 @@ def patch_shell_service(text: str) -> str:
 
 '''
     text = replace_once(text, selector, "", "donor shell path selector")
-
-    text = replace_once(
-        text,
-        '    char propbuf[PATH_MAX];\n',
-        '',
-        "unused donor shell property buffer",
-    )
+    text = replace_once(text, '    char propbuf[PATH_MAX];\n', '', "unused donor shell property buffer")
 
     old_exec = '''        if (command_.empty()) {
             execle(shell_command.c_str(), shell_command.c_str(), "-", nullptr, cenv.data());
@@ -201,10 +116,10 @@ def patch_shell_service(text: str) -> str:
     for forbidden in (
         'selinux_android_setcon("u:r:shell:s0")',
         'selinux_android_setcon("u:r:su:s0")',
+        "J720F_SHELL_CHILD phase=",
     ):
         if forbidden in text:
-            raise RuntimeError(f"superseded command-child context handoff remains: {forbidden}")
-
+            raise RuntimeError(f"superseded/diagnostic command-child code remains: {forbidden}")
     return text
 
 
@@ -228,14 +143,12 @@ def main() -> int:
         "sha256_before": sha256(original),
         "sha256_after": sha256(patched),
         "required_marker": MARKER,
-        "child_diag_marker": CHILD_MARKER,
         "shell_path": SHELL_PATH,
         "explicit_ld_library_path": "/sbin",
         "command_child_setcon": True,
         "target_child_context": TARGET_CONTEXT,
-        "command_child_stays_adbd": False,
         "parent_adbd_stays_adbd": True,
-        "parent_adbd_root_seclabel": False,
+        "success_path_diagnostics": False,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")
