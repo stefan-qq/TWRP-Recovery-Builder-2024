@@ -530,8 +530,10 @@ jobs:
 
           test -x tools/audit_recovery.py
           test -x tools/finalize_samsung_recovery.py
-          grep -Fq 'EXPECTED_KERNEL_SHA256 = "d33cf9471a60e8a3235a656bd949b18b1d0805945cc3072f463274bfe23f8a93"' tools/audit_recovery.py
+          grep -Fq 'EXPECTED_KERNEL_SHA256 = "7fb88490066cfd70e7daf245e88d86ec923f2a14244f668f35545c07329923e7"' tools/audit_recovery.py
           grep -Fq 'ADB_EXEC_CRED_OFFSET = 0x154D18' tools/audit_recovery.py
+          grep -Fq 'TOUCH_INFO_RAWDATA_OFFSET = 0x5C7950' tools/audit_recovery.py
+          grep -Fq 'TOUCH_MANUAL_RAWDATA_OFFSET = 0x5C7B10' tools/audit_recovery.py
           grep -Fq 'DEFEX_EXECVE_SELECTOR_OFFSET = 0x154524' tools/audit_recovery.py
           grep -Fq 'OTHER_ADB_ROOT_OFFSET = 0x2F47D4' tools/audit_recovery.py
           test -f prebuilt/kernel
@@ -993,7 +995,7 @@ jobs:
             echo 'architecture=source-built Android 7.1 donor-era TWRP userspace'
             echo 'base=v11 UI/touch with working data access and fully initialized native FunctionFS adbd'
             echo 'diagnostic=working USB/ADB transport plus raw/PTY shell and isolated sync-worker credential/context traces'
-            echo 'recovery_kernel=exact CUL1 stock kernel with proven recovery-only /sbin/adbd exec credential downgrade neutralized'
+            echo 'recovery_kernel=exact CUL1 stock kernel with two audited recovery-only patches: /sbin/adbd credential preservation and suppression of the automatic MMS438 boot self-test'
             echo 'twrp_version=3.3.0-0'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
@@ -1042,5 +1044,5 @@ jobs:
             "$OUT/recovery-audit/audit.json" \
             --repo "$GITHUB_REPOSITORY" \
             --title "J720F TWRP 3.3 ADB + MTP validation ${{ github.run_id }}" \
-            --notes "Validation build: preserves the hardware-proven native Android 7.1 FunctionFS ADB parent/child architecture and the single Samsung +0x154d18 credential fix, while adding PID1-owned Samsung kernel mtp.0 ConfigFS switching for TWRP MTP through /dev/usb_mtp_gadget. Not a stable community release until hardware validation is complete." \
+            --notes "Validation build: preserves the hardware-proven native Android 7.1 FunctionFS ADB parent/child architecture and the Samsung +0x154d18 ADB credential fix plus the +0x5c7950 MMS438 boot-self-test suppression, while retaining PID1-owned Samsung kernel mtp.0 ConfigFS switching for TWRP MTP through /dev/usb_mtp_gadget. Not a stable community release until hardware validation is complete." \
             --prerelease
