@@ -226,7 +226,6 @@ static int j720f_maybe_run_recovery_sync_worker() {
     char* context = nullptr;
     errno = 0;
     const int context_result = getcon(&context);
-    const int context_errno = errno;
     const bool root_ok = getuid() == 0 && geteuid() == 0 && getgid() == 0 && getegid() == 0;
     const bool context_ok = context_result == 0 && context != nullptr &&
                             strcmp(context, "u:r:recovery:s0") == 0;
