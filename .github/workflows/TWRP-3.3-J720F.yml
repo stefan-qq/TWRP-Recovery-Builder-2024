@@ -121,6 +121,23 @@ jobs:
           mv "$RUNNER_TEMP/recovery-source" \
             "$GITHUB_WORKSPACE/workspace/bootable/recovery"
 
+      - name: Exclude Official TWRP App and reboot prompt
+        shell: bash
+        run: |
+          set -euxo pipefail
+          RECOVERY=workspace/bootable/recovery
+          python3 tools/patch_j720f_twrp_exclude_app.py --recovery "$RECOVERY"
+          git -C "$RECOVERY" diff --check
+          python3 tools/patch_j720f_twrp_exclude_app.py \
+            --recovery "$RECOVERY" --verify-only
+          grep -Fq 'ifneq ($(TW_EXCLUDE_TWRPAPP), true)' \
+            "$RECOVERY/prebuilt/Android.mk"
+          ! grep -Fq '<action function="page">appcheck</action>' \
+            "$RECOVERY/gui/theme/common/portrait.xml"
+          ! grep -Fq 'Prompt to install TWRP app on every reboot' \
+            "$RECOVERY/gui/theme/common/portrait.xml"
+          git -C "$RECOVERY" diff -- prebuilt/Android.mk gui/theme/common/portrait.xml
+
       - name: Integrate ADB sideload with J720F one-shot FunctionFS rebind
         shell: bash
         run: |
@@ -491,6 +508,7 @@ jobs:
           grep -Fq 'TW_USE_NEW_MINADBD := true' BoardConfig.mk
           grep -Fq 'TW_INCLUDE_CRYPTO := true' BoardConfig.mk
           grep -Fq 'TW_MTP_DEVICE := "/dev/usb_mtp_gadget"' BoardConfig.mk
+          grep -Fq 'TW_EXCLUDE_TWRPAPP := true' BoardConfig.mk
           reject_grep 'MTP remains excluded' -q 'TW_EXCLUDE_MTP' BoardConfig.mk
           grep -Fq 'TW_DEFAULT_EXTERNAL_STORAGE := true' BoardConfig.mk
           grep -Fq 'BOARD_SEPOLICY_DIRS += device/samsung/j7duolte/sepolicy' BoardConfig.mk
@@ -499,6 +517,9 @@ jobs:
 
           grep -q '^/external_sd vfat /dev/block/mmcblk1p1 /dev/block/mmcblk1' recovery.fstab
           grep -q '^/data[[:space:]].*length=-20480' recovery.fstab
+          grep -q '^/system[[:space:]]\+ext4.*flags=.*backup=1.*wipeingui' recovery.fstab
+          reject_grep 'mountable /system still has flashimg=1' -q '^/system[[:space:]].*flashimg=1' recovery.fstab
+          grep -q '^/system_image[[:space:]]\+emmc.*by-name/SYSTEM.*flashimg=1' recovery.fstab
           reject_grep 'rejected legacy crypto footer remains' -q 'encryptable=footer' recovery.fstab
           grep -q '^/efs[[:space:]]\+emmc' recovery.fstab
           grep -q '^/cpefs[[:space:]]\+emmc' recovery.fstab
