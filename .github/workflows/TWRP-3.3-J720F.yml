@@ -841,7 +841,7 @@ jobs:
           grep -aFq 'J720F_CHILD_RECOVERY_SELCON failed' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F PTY setexeccon' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F_ADB_SYNC_FD' "$OUT/recovery/root/sbin/adbd"
-          grep -aFq 'J720F adb command child lost root before recovery setcon' "$OUT/recovery/root/sbin/adbd"
+          grep -aFq 'J720F adb command child lost UID/GID 0 before recovery setcon' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F adb child lost UID/GID 0 before exec' "$OUT/recovery/root/sbin/adbd"
           grep -aFq 'J720F /sbin/sh is not executable before adb child exec' "$OUT/recovery/root/sbin/adbd"
           reject_grep 'built adbd still contains child su handoff' -aFq 'J720F_CHILD_SU_SELCON failed' "$OUT/recovery/root/sbin/adbd"
