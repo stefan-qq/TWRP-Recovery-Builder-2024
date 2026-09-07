@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-release-r3
+        default: twrp-3.3
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
