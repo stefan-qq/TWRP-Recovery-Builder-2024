@@ -10,7 +10,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: Device-tree branch to build
         required: true
-        default: twrp-3.3-native-ffs-force-ffs-entry
+        default: twrp-3.3-release-r3
       PUBLISH_RELEASE:
         description: Publish a prerelease after audit
         required: false
@@ -25,6 +25,8 @@ jobs:
     env:
       RECOVERY_SOURCE_REPOSITORY: https://github.com/omnirom/android_bootable_recovery.git
       RECOVERY_SOURCE_COMMIT: b1a7ae9cd98e6ac3377d1fecc1341b9643a4f15b
+      EXPECTED_SYSTEM_CORE_COMMIT: 274f5e70d16b80fb6d464aeed3294695fb34fb43
+      EXPECTED_BIONIC_COMMIT: cb0033e69dd22cb42f7a2d6d87cb38ba45cca7da
       DEVICE_PATH: device/samsung/j7duolte
       DEVICE_NAME: j7duolte
       RECOVERY_LIMIT: '39845888'
@@ -98,7 +100,15 @@ jobs:
           test "$sync_ok" -eq 1
           test -f build/envsetup.sh
           test -d vendor/omni
+
+          # Preserve the exact donor-era source graph used by this build.
+          # The manifest branch is old but still mutable; -r resolves every
+          # project to a concrete commit for release provenance.
+          repo manifest -r -o resolved-manifest.xml
+          test -s resolved-manifest.xml
+          RESOLVED_MANIFEST_SHA256="$(sha256sum resolved-manifest.xml | awk '{print $1}')"
           echo "LEGACY_MANIFEST_BRANCH=$MANIFEST_BRANCH" >> "$GITHUB_ENV"
+          echo "RESOLVED_MANIFEST_SHA256=$RESOLVED_MANIFEST_SHA256" >> "$GITHUB_ENV"
           df -h
 
       - name: Pin the exact TWRP 3.3 recovery source used by v11
@@ -338,6 +348,13 @@ jobs:
           BIONIC_REMOTE_NAME="$(git -C "$BIONIC" remote | head -n 1)"
           test -n "$BIONIC_REMOTE_NAME"
           BIONIC_REPOSITORY="$(git -C "$BIONIC" remote get-url "$BIONIC_REMOTE_NAME")"
+
+          # Fail closed if the mutable donor manifest ever resolves these two
+          # critical userspace repositories away from the hardware-qualified
+          # source revisions. The full resolved manifest is archived as well.
+          test "$SYSTEM_CORE_COMMIT" = "$EXPECTED_SYSTEM_CORE_COMMIT"
+          test "$BIONIC_COMMIT" = "$EXPECTED_BIONIC_COMMIT"
+
           echo "BIONIC_COMMIT=$BIONIC_COMMIT" >> "$GITHUB_ENV"
           echo "BIONIC_REPOSITORY=$BIONIC_REPOSITORY" >> "$GITHUB_ENV"
 
@@ -940,6 +957,14 @@ jobs:
             "$OUT/recovery-audit/sepolicy-j720f-data-rules.txt"
           cp workspace/j720f-build-patches/* \
             "$OUT/recovery-audit/"
+          cp workspace/resolved-manifest.xml \
+            "$OUT/recovery-audit/resolved-manifest.xml"
+          echo "$RESOLVED_MANIFEST_SHA256  resolved-manifest.xml" \
+            > "$OUT/recovery-audit/resolved-manifest.sha256"
+          (
+            cd "$OUT/recovery-audit"
+            sha256sum -c resolved-manifest.sha256
+          )
           test "$(stat -c %s "$IMAGE")" -le "$RECOVERY_LIMIT"
 
       - name: Package Heimdall/Odin tar and metadata
@@ -961,6 +986,8 @@ jobs:
             echo 'system_image_raw_alias=true'
             echo 'twrp_app_excluded=true'
             echo 'storage_xml_nontext_guard=true'
+            echo "legacy_manifest_branch=$LEGACY_MANIFEST_BRANCH"
+            echo "resolved_manifest_sha256=$RESOLVED_MANIFEST_SHA256"
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
             echo "system_core_repository=$SYSTEM_CORE_REPOSITORY"
