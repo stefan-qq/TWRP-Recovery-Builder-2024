@@ -138,6 +138,27 @@ jobs:
             "$RECOVERY/gui/theme/common/portrait.xml"
           git -C "$RECOVERY" diff -- prebuilt/Android.mk gui/theme/common/portrait.xml
 
+      - name: Guard legacy adopted-storage parser from modern non-text storage.xml
+        shell: bash
+        run: |
+          set -euxo pipefail
+          RECOVERY=workspace/bootable/recovery
+          PATCH_DIR=workspace/j720f-build-patches
+          mkdir -p "$PATCH_DIR"
+          python3 tools/patch_j720f_twrp_storage_xml_guard.py \
+            --recovery "$RECOVERY" \
+            --report "$PATCH_DIR/twrp-storage-xml-guard-report.json"
+          git -C "$RECOVERY" diff --check
+          python3 tools/patch_j720f_twrp_storage_xml_guard.py \
+            --recovery "$RECOVERY" --verify-only
+          grep -Fq \
+            'J720F storage.xml guard: unsupported non-text storage.xml; skipping legacy adopted-storage metadata' \
+            "$RECOVERY/partitionmanager.cpp"
+          grep -Fq 'doc->parse<0>(xmlFile);' "$RECOVERY/partitionmanager.cpp"
+          git -C "$RECOVERY" diff -- partitionmanager.cpp \
+            > "$PATCH_DIR/twrp-storage-xml-guard.patch"
+          test -s "$PATCH_DIR/twrp-storage-xml-guard.patch"
+
       - name: Integrate ADB sideload with J720F one-shot FunctionFS rebind
         shell: bash
         run: |
@@ -889,6 +910,10 @@ jobs:
           grep -aFq '/tmp/orsout' "$OUT/recovery/root/sbin/recovery"
           reject_grep 'recovery binary still embeds /sbin/orsin' -aFq '/sbin/orsin' "$OUT/recovery/root/sbin/recovery"
           reject_grep 'recovery binary still embeds /sbin/orsout' -aFq '/sbin/orsout' "$OUT/recovery/root/sbin/recovery"
+          grep -aFq \
+            'J720F storage.xml guard: unsupported non-text storage.xml; skipping legacy adopted-storage metadata' \
+            "$OUT/recovery/root/sbin/recovery"
+          grep -aFq 'successfully loaded storage.xml' "$OUT/recovery/root/sbin/recovery"
           BUILD_EOF
 
       - name: Finalize Samsung image and audit
@@ -933,6 +958,9 @@ jobs:
             echo 'development_diagnostics=false'
             echo 'recovery_kernel=exact CUL1 stock kernel with two audited recovery-only patches: /sbin/adbd credential preservation and suppression of the automatic MMS438 boot self-test'
             echo 'twrp_version=3.3.0-0'
+            echo 'system_image_raw_alias=true'
+            echo 'twrp_app_excluded=true'
+            echo 'storage_xml_nontext_guard=true'
             echo "recovery_source_repository=$RECOVERY_SOURCE_REPOSITORY"
             echo "recovery_source_commit=$RECOVERY_SOURCE_COMMIT"
             echo "system_core_repository=$SYSTEM_CORE_REPOSITORY"
