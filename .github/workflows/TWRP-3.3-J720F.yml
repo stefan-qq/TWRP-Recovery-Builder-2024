@@ -1,4 +1,4 @@
-name: Build J720F TWRP 3.3 release candidate
+name: Build unofficial J720F TWRP 3.3
 
 on:
   workflow_dispatch:
@@ -111,7 +111,7 @@ jobs:
           echo "RESOLVED_MANIFEST_SHA256=$RESOLVED_MANIFEST_SHA256" >> "$GITHUB_ENV"
           df -h
 
-      - name: Pin the exact TWRP 3.3 recovery source used by v11
+      - name: Pin the released TWRP 3.3 recovery source
         shell: bash
         run: |
           set -euxo pipefail
